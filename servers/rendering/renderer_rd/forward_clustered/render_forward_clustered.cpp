@@ -31,6 +31,7 @@
 #include "render_forward_clustered.h"
 
 #include "core/config/project_settings.h"
+#include "core/os/os.h"
 #include "servers/rendering/renderer_rd/environment/fog.h"
 #include "servers/rendering/renderer_rd/framebuffer_cache_rd.h"
 #include "servers/rendering/renderer_rd/storage_rd/light_storage.h"
@@ -39,6 +40,7 @@
 #include "servers/rendering/renderer_rd/storage_rd/texture_storage.h"
 #include "servers/rendering/renderer_rd/uniform_set_cache_rd.h"
 #include "servers/rendering/rendering_device.h"
+#include "servers/rendering/renderer_viewport.h"
 #include "servers/rendering/rendering_server_default.h"
 #include "servers/rendering/storage/ltc_lut.gen.h"
 
@@ -517,6 +519,10 @@ void RenderForwardClustered::_render_list_template(RenderingDevice::DrawListID p
 			}
 
 			pipeline_hash = pipeline_key.hash();
+
+			if (pipeline_key.ubershader && _draw_pipelines_report_enabled() && !shader->pipeline_hash_map.was_submitted(pipeline_hash)) {
+				_report_draw_pipeline(shader, pipeline_key, surf, p_pass_mode);
+			}
 
 			if (shader != prev_shader || pipeline_hash != prev_pipeline_hash) {
 				RSE::PipelineSource pipeline_source = pipeline_key.ubershader ? RSE::PIPELINE_SOURCE_DRAW : RSE::PIPELINE_SOURCE_SPECIALIZATION;
@@ -4147,7 +4153,20 @@ void RenderForwardClustered::_update_global_pipeline_data_requirements_from_proj
 	const bool positional_shadow_16_bits = GLOBAL_GET_CACHED(bool, "rendering/lights_and_shadows/positional_shadow/atlas_16_bits");
 	global_pipeline_data_required.use_16_bit_shadows = directional_shadow_16_bits || positional_shadow_16_bits;
 	global_pipeline_data_required.use_32_bit_shadows = !directional_shadow_16_bits || !positional_shadow_16_bits;
-	global_pipeline_data_required.texture_samples = RenderSceneBuffersRD::msaa_to_samples(RSE::ViewportMSAA(msaa_3d_mode));
+	// Compile ahead of time for the MSAA the windows are drawn with, not the project's: the project
+	// setting is only the root viewport's initial value, and with the game setting another one at
+	// runtime (a graphics option) the window drew into another framebuffer format, none of the surface
+	// compilations matched, and every new combination compiled at draw time. SubViewports with their
+	// own MSAA (a portrait, an offscreen render) are left out, as they were: compiling everything for
+	// each would multiply the background work and redo all of it whenever one comes and goes. With no
+	// window drawing 3D (none active yet, or its 3D disabled for a while, the game drawing the world in
+	// a SubViewport copying the window's settings) the last mask is kept, and the project's is used
+	// only before any.
+	uint32_t msaa_3d_mask = RSG::viewport != nullptr ? RSG::viewport->get_screen_msaa_3d_mask() : 0;
+	if (msaa_3d_mask == 0) {
+		msaa_3d_mask = global_pipeline_data_required.msaa_3d_mask != 0 ? uint32_t(global_pipeline_data_required.msaa_3d_mask) : 1u << uint32_t(msaa_3d_mode);
+	}
+	global_pipeline_data_required.msaa_3d_mask = msaa_3d_mask;
 }
 
 void RenderForwardClustered::_update_global_pipeline_data_requirements_from_light_storage() {
@@ -4654,6 +4673,9 @@ static RD::FramebufferFormatID _get_reflection_probe_depth_framebuffer_format_fo
 	return RD::get_singleton()->framebuffer_format_create(Vector<RD::AttachmentFormat>(attachments));
 }
 
+// Diagnostic (--shadernomes): while set, _mesh_compile_pipeline_for_surface only lists the keys, without compiling.
+static thread_local bool pipelines_dry_run = false;
+
 void RenderForwardClustered::_mesh_compile_pipeline_for_surface(SceneShaderForwardClustered::ShaderData *p_shader, void *p_mesh_surface, bool p_ubershader, bool p_instanced_surface, RSE::PipelineSource p_source, SceneShaderForwardClustered::ShaderData::PipelineKey &r_pipeline_key, Vector<ShaderPipelinePair> *r_pipeline_pairs) {
 	RendererRD::MeshStorage *mesh_storage = RendererRD::MeshStorage::get_singleton();
 	uint64_t input_mask = p_shader->get_vertex_input_mask(r_pipeline_key.version, r_pipeline_key.color_pass_flags, p_ubershader);
@@ -4662,7 +4684,9 @@ void RenderForwardClustered::_mesh_compile_pipeline_for_surface(SceneShaderForwa
 	r_pipeline_key.vertex_format_id = mesh_storage->mesh_surface_get_vertex_format(p_mesh_surface, input_mask, p_instanced_surface, pipeline_motion_vectors, emulate_point_size);
 	r_pipeline_key.ubershader = p_ubershader;
 
-	p_shader->pipeline_hash_map.compile_pipeline(r_pipeline_key, r_pipeline_key.hash(), p_source, p_ubershader);
+	if (!pipelines_dry_run) {
+		p_shader->pipeline_hash_map.compile_pipeline(r_pipeline_key, r_pipeline_key.hash(), p_source, p_ubershader);
+	}
 
 	if (r_pipeline_pairs != nullptr) {
 		r_pipeline_pairs->push_back({ p_shader, r_pipeline_key });
@@ -4670,6 +4694,16 @@ void RenderForwardClustered::_mesh_compile_pipeline_for_surface(SceneShaderForwa
 }
 
 void RenderForwardClustered::_mesh_compile_pipelines_for_surface(const SurfacePipelineData &p_surface, const GlobalPipelineData &p_global, RSE::PipelineSource p_source, Vector<ShaderPipelinePair> *r_pipeline_pairs) {
+	// Once per MSAA mode in use. The passes that don't depend on it are repeated, but a pipeline already
+	// requested is skipped by its hash.
+	for (uint32_t msaa = 0; msaa < RSE::VIEWPORT_MSAA_MAX; msaa++) {
+		if (p_global.msaa_3d_mask & (1u << msaa)) {
+			_mesh_compile_pipelines_for_surface_samples(p_surface, p_global, RenderSceneBuffersRD::msaa_to_samples(RSE::ViewportMSAA(msaa)), p_source, r_pipeline_pairs);
+		}
+	}
+}
+
+void RenderForwardClustered::_mesh_compile_pipelines_for_surface_samples(const SurfacePipelineData &p_surface, const GlobalPipelineData &p_global, RD::TextureSamples p_samples, RSE::PipelineSource p_source, Vector<ShaderPipelinePair> *r_pipeline_pairs) {
 	RendererRD::MeshStorage *mesh_storage = RendererRD::MeshStorage::get_singleton();
 	bool octmap_use_storage = !copy_effects->get_raster_effects().has_flag(RendererRD::CopyEffects::RASTER_EFFECT_OCTMAP);
 
@@ -4713,7 +4747,7 @@ void RenderForwardClustered::_mesh_compile_pipelines_for_surface(const SurfacePi
 
 				// View count is assumed to be 2 as the configuration is dependent on the viewport. It's likely a safe assumption for stereo rendering.
 				uint32_t view_count = multiview ? 2 : 1;
-				pipeline_key.framebuffer_format_id = _get_color_framebuffer_format_for_pipeline(buffers_color_format, buffers_can_be_storage, RD::TextureSamples(p_global.texture_samples), false, false, view_count);
+				pipeline_key.framebuffer_format_id = _get_color_framebuffer_format_for_pipeline(buffers_color_format, buffers_can_be_storage, p_samples, false, false, view_count);
 				_mesh_compile_pipeline_for_surface(p_surface.shader, p_surface.mesh_surface, true, p_surface.instanced, p_source, pipeline_key, r_pipeline_pairs);
 
 				// Generate all the possible variants used during the advanced color passes.
@@ -4737,7 +4771,7 @@ void RenderForwardClustered::_mesh_compile_pipelines_for_surface(const SurfacePi
 							pipeline_key.color_pass_flags |= SceneShaderForwardClustered::PIPELINE_COLOR_PASS_FLAG_MOTION_VECTORS;
 						}
 
-						pipeline_key.framebuffer_format_id = _get_color_framebuffer_format_for_pipeline(buffers_color_format, buffers_can_be_storage, RD::TextureSamples(p_global.texture_samples), separate_specular, motion_vectors, view_count);
+						pipeline_key.framebuffer_format_id = _get_color_framebuffer_format_for_pipeline(buffers_color_format, buffers_can_be_storage, p_samples, separate_specular, motion_vectors, view_count);
 						_mesh_compile_pipeline_for_surface(p_surface.shader, p_surface.mesh_surface, true, p_surface.instanced, p_source, pipeline_key, r_pipeline_pairs);
 					}
 				}
@@ -4755,21 +4789,21 @@ void RenderForwardClustered::_mesh_compile_pipelines_for_surface(const SurfacePi
 	if (p_global.use_normal_and_roughness) {
 		// A lot of different effects rely on normal and roughness being written to during the depth pass.
 		pipeline_key.version = SceneShaderForwardClustered::PIPELINE_VERSION_DEPTH_PASS_WITH_NORMAL_AND_ROUGHNESS;
-		pipeline_key.framebuffer_format_id = _get_depth_framebuffer_format_for_pipeline(buffers_can_be_storage, RD::TextureSamples(p_global.texture_samples), true, false);
+		pipeline_key.framebuffer_format_id = _get_depth_framebuffer_format_for_pipeline(buffers_can_be_storage, p_samples, true, false);
 		_mesh_compile_pipeline_for_surface(p_surface.shader, p_surface.mesh_surface, true, p_surface.instanced, p_source, pipeline_key, r_pipeline_pairs);
 	}
 
 	if (p_global.use_voxelgi) {
 		// Depth pass with VoxelGI support.
 		pipeline_key.version = SceneShaderForwardClustered::PIPELINE_VERSION_DEPTH_PASS_WITH_NORMAL_AND_ROUGHNESS_AND_VOXEL_GI;
-		pipeline_key.framebuffer_format_id = _get_depth_framebuffer_format_for_pipeline(buffers_can_be_storage, RD::TextureSamples(p_global.texture_samples), true, true);
+		pipeline_key.framebuffer_format_id = _get_depth_framebuffer_format_for_pipeline(buffers_can_be_storage, p_samples, true, true);
 		_mesh_compile_pipeline_for_surface(p_surface.shader, p_surface.mesh_surface, true, p_surface.instanced, p_source, pipeline_key, r_pipeline_pairs);
 	}
 
 	if (p_global.use_sdfgi) {
 		// Depth pass with SDFGI support.
 		pipeline_key.version = SceneShaderForwardClustered::PIPELINE_VERSION_DEPTH_PASS_WITH_SDF;
-		pipeline_key.framebuffer_format_id = _get_depth_framebuffer_format_for_pipeline(buffers_can_be_storage, RD::TextureSamples(p_global.texture_samples), false, false);
+		pipeline_key.framebuffer_format_id = _get_depth_framebuffer_format_for_pipeline(buffers_can_be_storage, p_samples, false, false);
 		_mesh_compile_pipeline_for_surface(p_surface.shader, p_surface.mesh_surface, true, p_surface.instanced, p_source, pipeline_key, r_pipeline_pairs);
 
 		// Depth pass with SDFGI support for an empty framebuffer.
@@ -4780,7 +4814,7 @@ void RenderForwardClustered::_mesh_compile_pipelines_for_surface(const SurfacePi
 	// The dedicated depth passes use a different version of the surface and the shader.
 	pipeline_key.primitive_type = mesh_storage->mesh_surface_get_primitive(p_surface.mesh_surface_shadow);
 	pipeline_key.version = SceneShaderForwardClustered::PIPELINE_VERSION_DEPTH_PASS;
-	pipeline_key.framebuffer_format_id = _get_depth_framebuffer_format_for_pipeline(buffers_can_be_storage, RD::TextureSamples(p_global.texture_samples), false, false);
+	pipeline_key.framebuffer_format_id = _get_depth_framebuffer_format_for_pipeline(buffers_can_be_storage, p_samples, false, false);
 	_mesh_compile_pipeline_for_surface(p_surface.shader_shadow, p_surface.mesh_surface_shadow, true, p_surface.instanced, p_source, pipeline_key, r_pipeline_pairs);
 
 	if (p_global.use_shadow_dual_paraboloid) {
@@ -4816,7 +4850,7 @@ void RenderForwardClustered::_mesh_compile_pipelines_for_surface(const SurfacePi
 	}
 }
 
-void RenderForwardClustered::_mesh_generate_all_pipelines_for_surface_cache(GeometryInstanceSurfaceDataCache *p_surface_cache, const GlobalPipelineData &p_global) {
+RenderForwardClustered::SurfacePipelineData RenderForwardClustered::_surface_pipeline_data(const GeometryInstanceSurfaceDataCache *p_surface_cache) const {
 	bool uses_alpha_pass = (p_surface_cache->flags & GeometryInstanceSurfaceDataCache::FLAG_PASS_ALPHA) != 0;
 	float multiplied_fade_alpha = p_surface_cache->owner->force_alpha * p_surface_cache->owner->parent_fade_alpha;
 	bool uses_fade = (multiplied_fade_alpha < FADE_ALPHA_PASS_THRESHOLD) || p_surface_cache->owner->fade_near || p_surface_cache->owner->fade_far;
@@ -4830,7 +4864,86 @@ void RenderForwardClustered::_mesh_generate_all_pipelines_for_surface_cache(Geom
 	surface.uses_transparent = uses_alpha_pass || uses_fade;
 	surface.uses_depth = (p_surface_cache->flags & (GeometryInstanceSurfaceDataCache::FLAG_PASS_DEPTH | GeometryInstanceSurfaceDataCache::FLAG_PASS_OPAQUE | GeometryInstanceSurfaceDataCache::FLAG_PASS_SHADOW)) != 0;
 	surface.can_use_lightmap = p_surface_cache->owner->lightmap_instance.is_valid() || p_surface_cache->owner->lightmap_sh;
-	_mesh_compile_pipelines_for_surface(surface, p_global, RSE::PIPELINE_SOURCE_SURFACE);
+	return surface;
+}
+
+void RenderForwardClustered::_mesh_generate_all_pipelines_for_surface_cache(GeometryInstanceSurfaceDataCache *p_surface_cache, const GlobalPipelineData &p_global) {
+	_mesh_compile_pipelines_for_surface(_surface_pipeline_data(p_surface_cache), p_global, RSE::PIPELINE_SOURCE_SURFACE);
+}
+
+bool RenderForwardClustered::_draw_pipelines_report_enabled() {
+	static const bool enabled = OS::get_singleton()->get_cmdline_user_args().find("--shadernomes") != nullptr;
+	return enabled;
+}
+
+// Diagnostic (--shadernomes among the user arguments): an ubershader pipeline nobody requested before
+// drawing (RENDERING_INFO_PIPELINE_COMPILATIONS_DRAW). Prints its shader, mesh and key, and how the key
+// differs from the closest one the surface compilation (PIPELINE_SOURCE_SURFACE) requests. With a mesh
+// instance (skeleton, blend shapes) the vertex format drawn is the instance's and the one compared is
+// the base mesh's, so a vertex difference there is expected.
+void RenderForwardClustered::_report_draw_pipeline(SceneShaderForwardClustered::ShaderData *p_shader, const SceneShaderForwardClustered::ShaderData::PipelineKey &p_key, const GeometryInstanceSurfaceDataCache *p_surf, uint32_t p_pass_mode) {
+	typedef SceneShaderForwardClustered::ShaderData::PipelineKey Key;
+	Vector<ShaderPipelinePair> pairs;
+	pipelines_dry_run = true;
+	_mesh_compile_pipelines_for_surface(_surface_pipeline_data(p_surf), global_pipeline_data_compiled, RSE::PIPELINE_SOURCE_SURFACE, &pairs);
+	pipelines_dry_run = false;
+
+	String best;
+	int best_count = 100;
+	for (const ShaderPipelinePair &pair : pairs) {
+		const Key &k = pair.second;
+		String d;
+		int n = 0;
+		if (pair.first != p_shader) {
+			d += " shader";
+			n++;
+		}
+		if (k.vertex_format_id != p_key.vertex_format_id) {
+			d += vformat(" vertice(previsto %d)", int64_t(k.vertex_format_id));
+			n++;
+		}
+		if (k.framebuffer_format_id != p_key.framebuffer_format_id) {
+			d += vformat(" framebuffer(previsto %d)", int64_t(k.framebuffer_format_id));
+			n++;
+		}
+		if (k.version != p_key.version) {
+			d += vformat(" versao(prevista %d)", int(k.version));
+			n++;
+		}
+		if (k.color_pass_flags != p_key.color_pass_flags) {
+			d += vformat(" cor(prevista %x)", k.color_pass_flags);
+			n++;
+		}
+		if (k.primitive_type != p_key.primitive_type) {
+			d += vformat(" primitiva(prevista %d)", int(k.primitive_type));
+			n++;
+		}
+		if (k.cull_mode != p_key.cull_mode || k.wireframe != p_key.wireframe) {
+			d += " cull/arame";
+			n++;
+		}
+		if (n < best_count) {
+			best_count = n;
+			best = d;
+		}
+	}
+
+	RendererRD::MeshStorage *mesh_storage = RendererRD::MeshStorage::get_singleton();
+	RID mesh = p_surf->owner->data->base;
+	String kind = "malha";
+	if (p_surf->owner->data->base_type == RSE::INSTANCE_MULTIMESH) {
+		mesh = mesh_storage->_multimesh_get_mesh(mesh);
+		kind = "multimalha";
+	} else if (p_surf->owner->data->base_type == RSE::INSTANCE_PARTICLES) {
+		kind = "particulas";
+		mesh = RID();
+	}
+	String mesh_path = mesh.is_valid() ? mesh_storage->mesh_get_path(mesh) : String();
+	String why = pairs.is_empty() ? String(" (a superficie nao pede nenhuma)") : (best_count == 0 ? String(" (prevista: so nao chegou a ser pedida)") : vformat(" difere da prevista em:%s", best));
+	print_line(vformat("pipeline na hora: shader \"%s\" %s \"%s\"%s passada %d versao %d cor %x fb %d vertice %d primitiva %d%s%s",
+			p_shader->path, kind, mesh_path, p_surf->owner->mesh_instance.is_valid() ? String(" (instancia de malha)") : String(),
+			int(p_pass_mode), int(p_key.version), p_key.color_pass_flags, int64_t(p_key.framebuffer_format_id), int64_t(p_key.vertex_format_id), int(p_key.primitive_type),
+			global_pipeline_data_required.key != global_pipeline_data_compiled.key ? String(" [global mudou]") : String(), why));
 }
 
 void RenderForwardClustered::_update_dirty_geometry_instances() {

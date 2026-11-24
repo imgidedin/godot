@@ -636,7 +636,7 @@ private:
 			uint32_t key;
 
 			struct {
-				uint32_t texture_samples : 3;
+				uint32_t msaa_3d_mask : 4; // the 3D MSAA modes of the windows (bit = RSE::ViewportMSAA): pipelines are compiled for each
 				uint32_t use_reflection_probes : 1;
 				uint32_t use_separate_specular : 1;
 				uint32_t use_motion_vectors : 1;
@@ -666,7 +666,13 @@ private:
 	void _geometry_instance_update(RenderGeometryInstance *p_geometry_instance);
 	void _mesh_compile_pipeline_for_surface(SceneShaderForwardClustered::ShaderData *p_shader, void *p_mesh_surface, bool p_ubershader, bool p_instanced_surface, RSE::PipelineSource p_source, SceneShaderForwardClustered::ShaderData::PipelineKey &r_pipeline_key, Vector<ShaderPipelinePair> *r_pipeline_pairs = nullptr);
 	void _mesh_compile_pipelines_for_surface(const SurfacePipelineData &p_surface, const GlobalPipelineData &p_global, RSE::PipelineSource p_source, Vector<ShaderPipelinePair> *r_pipeline_pairs = nullptr);
+	void _mesh_compile_pipelines_for_surface_samples(const SurfacePipelineData &p_surface, const GlobalPipelineData &p_global, RD::TextureSamples p_samples, RSE::PipelineSource p_source, Vector<ShaderPipelinePair> *r_pipeline_pairs);
 	void _mesh_generate_all_pipelines_for_surface_cache(GeometryInstanceSurfaceDataCache *p_surface_cache, const GlobalPipelineData &p_global);
+	SurfacePipelineData _surface_pipeline_data(const GeometryInstanceSurfaceDataCache *p_surface_cache) const;
+
+	// Diagnostic of the ubershader pipelines compiled at draw time (--shadernomes among the user arguments).
+	static bool _draw_pipelines_report_enabled();
+	void _report_draw_pipeline(SceneShaderForwardClustered::ShaderData *p_shader, const SceneShaderForwardClustered::ShaderData::PipelineKey &p_key, const GeometryInstanceSurfaceDataCache *p_surf, uint32_t p_pass_mode);
 	void _update_dirty_geometry_instances();
 	void _update_dirty_geometry_pipelines();
 

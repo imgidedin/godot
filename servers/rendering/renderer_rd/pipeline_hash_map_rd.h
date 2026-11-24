@@ -152,6 +152,12 @@ public:
 		compilation_tasks.insert(p_key_hash, task_id);
 	}
 
+	// True if the key was already requested (compiled or compiling). Used by a diagnostic.
+	bool was_submitted(uint32_t p_key_hash) {
+		MutexLock local_lock(local_mutex);
+		return compilation_set.has(p_key_hash);
+	}
+
 	void wait_for_pipeline(uint32_t p_key_hash) {
 		WorkerThreadPool::TaskID task_id_to_wait = WorkerThreadPool::INVALID_TASK_ID;
 

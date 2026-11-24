@@ -1398,6 +1398,16 @@ void RendererViewport::viewport_set_msaa_2d(RID p_viewport, RSE::ViewportMSAA p_
 	RSG::texture_storage->render_target_set_msaa(viewport->render_target, p_msaa);
 }
 
+uint32_t RendererViewport::get_screen_msaa_3d_mask() const {
+	uint32_t mask = 0;
+	for (const Viewport *viewport : active_viewports) {
+		if (!viewport->disable_3d && viewport->viewport_to_screen != DisplayServerEnums::INVALID_WINDOW_ID) {
+			mask |= 1u << uint32_t(viewport->msaa_3d);
+		}
+	}
+	return mask;
+}
+
 void RendererViewport::viewport_set_msaa_3d(RID p_viewport, RSE::ViewportMSAA p_msaa) {
 	Viewport *viewport = viewport_owner.get_or_null(p_viewport);
 	ERR_FAIL_NULL(viewport);

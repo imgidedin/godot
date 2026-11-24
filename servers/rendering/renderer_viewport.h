@@ -217,6 +217,10 @@ private:
 	void _resize_occlusion_culling_buffer(const Size2i &p_size);
 
 public:
+	// The 3D MSAA modes of the active viewports drawn to a window (bit = RSE::ViewportMSAA). The scene
+	// renderer compiles each surface's pipelines ahead of time for these.
+	uint32_t get_screen_msaa_3d_mask() const;
+
 	RID viewport_allocate();
 	void viewport_initialize(RID p_rid);
 

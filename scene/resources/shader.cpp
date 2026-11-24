@@ -34,6 +34,9 @@
 #include "core/config/engine.h"
 #include "core/object/callable_mp.h"
 #include "core/object/class_db.h"
+#include "core/object/script_backtrace.h"
+#include "core/object/script_language.h"
+#include "core/os/os.h"
 #include "scene/main/scene_tree.h"
 #include "scene/resources/texture.h"
 #include "servers/rendering/rendering_server.h"
@@ -53,11 +56,34 @@ Shader::Mode Shader::get_mode() const {
 	return mode;
 }
 
+// Diagnostic (--shadernomes among the user arguments): a shader created on first use (the RID is made
+// lazily) is compiled on the calling thread, in the frame that uses it. Prints which one, how long it
+// took and the script call stack that asked for it.
+static bool _shader_creation_report_enabled() {
+	static const bool enabled = OS::get_singleton()->get_cmdline_user_args().find("--shadernomes") != nullptr;
+	return enabled;
+}
+
 void Shader::_check_shader_rid() const {
 	MutexLock lock(shader_rid_mutex);
 	if (shader_rid.is_null() && !preprocessed_code.is_empty()) {
+		const bool report = _shader_creation_report_enabled() && Engine::get_singleton()->get_process_frames() > 0;
+		const uint64_t t0 = report ? OS::get_singleton()->get_ticks_usec() : 0;
 		shader_rid = RenderingServer::get_singleton()->shader_create_from_code(preprocessed_code, get_path());
 		preprocessed_code = String();
+		if (report) {
+			String where;
+			if (Thread::is_main_thread()) {
+				for (const Ref<ScriptBacktrace> &backtrace : ScriptServer::capture_script_backtraces(false)) {
+					if (!where.is_empty()) {
+						where += "\n";
+					}
+					where += backtrace->format(4, 6);
+				}
+			}
+			print_line(vformat("shader criado na hora: \"%s\" %.1f ms no quadro %d%s%s", get_path(), (OS::get_singleton()->get_ticks_usec() - t0) / 1000.0,
+					int64_t(Engine::get_singleton()->get_process_frames()), Thread::is_main_thread() ? String() : String(" (fora da linha principal)"), where.is_empty() ? String() : "\n" + where));
+		}
 	}
 }
 
