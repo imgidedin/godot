@@ -4411,9 +4411,21 @@ bool RendererSceneCull::free(RID p_rid) {
 	} else if (instance_owner.owns(p_rid)) {
 		// delete the instance
 
-		update_dirty_instances();
-
 		Instance *instance = instance_owner.get_or_null(p_rid);
+
+		// Don't update the instance being freed with the others: its owner may already have released
+		// materials it points at. A node frees its instance in ~VisualInstance3D, after its own
+		// members are gone, such as a MeshInstance3D's surface override materials. Materials set
+		// since the instance's last update (for example, on one created and freed in the same frame)
+		// aren't registered as its dependencies yet, so it isn't told they were freed, and updating it
+		// here would look up freed material RIDs (errors in material_casts_shadows,
+		// material_is_animated, material_get_instance_shader_parameters and
+		// material_update_dependency). The calls below clear its base and materials, and the last
+		// update_dirty_instances() handles whatever they queue.
+		if (instance->update_item.in_list()) {
+			_instance_update_list.remove(&instance->update_item);
+		}
+		update_dirty_instances();
 
 		instance_geometry_set_lightmap(p_rid, RID(), Rect2(), 0);
 		instance_set_scenario(p_rid, RID());
