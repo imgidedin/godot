@@ -343,17 +343,24 @@ void RendererViewport::_draw_3d(Viewport *p_viewport) {
 #endif // XR_DISABLED
 
 #ifdef RD_ENABLED
-	// Frame generation on the window this viewport goes to (rendering/frame_generation/mode): only
-	// with AMD FSR Upscaling, whose motion vectors (the camera's in every pixel) it uses. Not with
-	// DLSS: AMD's swapchain loads Vulkan by itself, so its presents bypass Streamline, which then
-	// never runs its per-present bookkeeping.
+	// Frame generation on the window this viewport goes to (rendering/frame_generation/mode), each
+	// with its upscaler, whose motion vectors (the camera's in every pixel) it uses: AMD FSR Frame
+	// Generation with AMD FSR Upscaling, DLSS Frame Generation with DLSS. Not AMD's with DLSS: AMD's
+	// swapchain loads Vulkan by itself, so its presents bypass Streamline, which then never runs its
+	// per-present bookkeeping.
 	if (p_viewport->render_buffers.is_valid() && RD::get_singleton() != nullptr && p_viewport->viewport_to_screen != DisplayServerEnums::INVALID_WINDOW_ID) {
 		const RSE::ViewportScaling3DMode mode = p_viewport->effective_scaling_3d_mode;
-		const bool wanted = GLOBAL_GET_CACHED(int, "rendering/frame_generation/mode") == 1 && mode == RSE::VIEWPORT_SCALING_3D_MODE_FSR_UPSCALING;
+		const int setting = GLOBAL_GET_CACHED(int, "rendering/frame_generation/mode");
+		RD::FrameGeneration wanted = RD::FRAME_GENERATION_NONE;
+		if (setting == 1 && mode == RSE::VIEWPORT_SCALING_3D_MODE_FSR_UPSCALING) {
+			wanted = RD::FRAME_GENERATION_FSR;
+		} else if (setting == 2 && mode == RSE::VIEWPORT_SCALING_3D_MODE_DLSS) {
+			wanted = RD::FRAME_GENERATION_DLSS;
+		}
 		const RID rt_texture = RSG::texture_storage->texture_get_rd_texture(RSG::texture_storage->render_target_get_texture(p_viewport->render_target));
 		const RD::DataFormat hudless_format = rt_texture.is_valid() ? RD::get_singleton()->texture_get_format(rt_texture).format : RD::DATA_FORMAT_R8G8B8A8_UNORM;
 		RD::get_singleton()->screen_set_frame_generation(p_viewport->viewport_to_screen, wanted, hudless_format);
-		p_viewport->render_buffers->set_frame_generation_screen(wanted ? p_viewport->viewport_to_screen : -1);
+		p_viewport->render_buffers->set_frame_generation_screen(wanted != RD::FRAME_GENERATION_NONE ? p_viewport->viewport_to_screen : -1);
 	}
 #endif
 

@@ -170,6 +170,7 @@ void DLSSEffect::_process_pending_frees(bool p_all) {
 			DLSSVulkan &dlss = _get_dlss();
 			if (dlss.is_available()) {
 				dlss.get_functions().free_resources(sl::kFeatureDLSS, sl::ViewportHandle(pending_frees[i].context->viewport));
+				dlss.frame_generation_free_viewport(pending_frees[i].context->viewport);
 			}
 			memdelete(pending_frees[i].context);
 			pending_frees.remove_at_unordered(i);
@@ -199,15 +200,9 @@ void DLSSEffect::upscale(const Parameters &p_params) {
 	ERR_FAIL_COND(!dlss.is_available());
 	const DLSSVulkan::Functions &sl_functions = dlss.get_functions();
 
-	const uint64_t frames_drawn = RD::get_singleton()->get_frames_drawn();
-	if (frame_token_frame != frames_drawn) {
-		sl::FrameToken *token = nullptr;
-		const uint32_t frame_index = uint32_t(frames_drawn);
-		ERR_FAIL_COND_MSG(sl_functions.get_new_frame_token(token, &frame_index) != sl::Result::eOk, "DLSS: no frame token from Streamline.");
-		frame_token = token;
-		frame_token_frame = frames_drawn;
-	}
-	sl::FrameToken *token = (sl::FrameToken *)frame_token;
+	// The frame's index is Godot's, the one the latency markers and the presents go with.
+	sl::FrameToken *token = dlss.get_render_frame_token();
+	ERR_FAIL_NULL_MSG(token, "DLSS: no frame token from Streamline.");
 	const sl::ViewportHandle viewport(p_params.context->viewport);
 
 	// The preset changed (in the options of the game): the same viewport takes the new model.
@@ -234,6 +229,8 @@ void DLSSEffect::upscale(const Parameters &p_params) {
 	constants.clipToPrevClip = _to_sl(clip_to_prev_clip);
 	constants.prevClipToClip = _to_sl(clip_to_prev_clip.inverse());
 	constants.jitterOffset = sl::float2(p_params.jitter.x, p_params.jitter.y);
+	// Godot's projections are centered (the jitter aside).
+	constants.cameraPinholeOffset = sl::float2(0.0f, 0.0f);
 	// Godot's motion vectors are in UV units (a whole screen is 1), pointing to the previous position.
 	constants.mvecScale = sl::float2(1.0f, 1.0f);
 	constants.cameraPos = _to_sl(p_params.transform.origin);
@@ -318,6 +315,79 @@ void DLSSEffect::callback(RDD *p_driver, RDD::CommandBufferID p_command_buffer, 
 		ERR_PRINT_ONCE(vformat("DLSS: evaluation failed (Streamline error %d).", (int)result));
 	}
 	p_userdata->owner->args_allocator.free(p_userdata);
+}
+
+struct DLSSEffect::FrameGenerationArgs {
+	DLSSEffect *owner = nullptr;
+	DisplayServerEnums::WindowID screen = DisplayServerEnums::INVALID_WINDOW_ID;
+	uint32_t viewport = 0;
+	Size2i internal_size;
+	Size2i target_size;
+	RDD::TextureID depth;
+	RDD::TextureID velocity;
+	RDD::TextureID hudless;
+};
+
+void DLSSEffect::generate_frames(const FrameGenerationParameters &p_params) {
+	ERR_FAIL_NULL(p_params.context);
+	RD *rd = RD::get_singleton();
+	FrameGenerationArgs *args = frame_generation_args_allocator.alloc();
+	args->owner = this;
+	args->screen = p_params.screen;
+	args->viewport = p_params.context->viewport;
+	args->internal_size = p_params.internal_size;
+	args->target_size = p_params.context->target_size;
+	args->depth = rd->texture_get_driver_id(p_params.depth);
+	args->velocity = rd->texture_get_driver_id(p_params.velocity);
+	args->hudless = rd->texture_get_driver_id(p_params.hudless);
+
+	RD::CallbackResource resources[3] = {
+		{ p_params.depth, RD::CALLBACK_RESOURCE_TYPE_TEXTURE, RD::CALLBACK_RESOURCE_USAGE_TEXTURE_SAMPLE },
+		{ p_params.velocity, RD::CALLBACK_RESOURCE_TYPE_TEXTURE, RD::CALLBACK_RESOURCE_USAGE_TEXTURE_SAMPLE },
+		{ p_params.hudless, RD::CALLBACK_RESOURCE_TYPE_TEXTURE, RD::CALLBACK_RESOURCE_USAGE_TEXTURE_SAMPLE },
+	};
+	rd->driver_callback_add((RDD::DriverCallback)DLSSEffect::frame_generation_callback, args, VectorView<RD::CallbackResource>(resources, 3));
+}
+
+void DLSSEffect::frame_generation_callback(RDD *p_driver, RDD::CommandBufferID p_command_buffer, FrameGenerationArgs *p_userdata) {
+	// The window's swap chain now (none if the window was closed since the frame was recorded), if it
+	// still generates with DLSS.
+	const RDD::SwapChainID swap_chain = RD::get_singleton()->screen_get_driver_swap_chain(p_userdata->screen);
+	DLSSVulkan &dlss = _get_dlss();
+	sl::FrameToken *token = dlss.get_render_frame_token();
+	if (swap_chain.id != 0 && p_driver->swap_chain_get_frame_generation(swap_chain) == RDD::FRAME_GENERATION_DLSS && token != nullptr) {
+		sl::CommandBuffer *command_buffer = (sl::CommandBuffer *)RenderingDeviceDriverVulkan::command_buffer_get_vk(p_command_buffer);
+		const sl::ViewportHandle viewport(p_userdata->viewport);
+		sl::Resource depth = _get_resource(p_userdata->depth, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		sl::Resource velocity = _get_resource(p_userdata->velocity, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		sl::Resource hudless = _get_resource(p_userdata->hudless, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+		const sl::Extent render_extent = { 0, 0, uint32_t(p_userdata->internal_size.width), uint32_t(p_userdata->internal_size.height) };
+		const sl::Extent output_extent = { 0, 0, uint32_t(p_userdata->target_size.width), uint32_t(p_userdata->target_size.height) };
+		// Valid until the present: nothing writes them or changes their layout until the next frame,
+		// which is recorded after it (what NVIDIA recommends: no copies).
+		const sl::ResourceTag tags[3] = {
+			sl::ResourceTag(&depth, sl::kBufferTypeDepth, sl::ResourceLifecycle::eValidUntilPresent, &render_extent),
+			sl::ResourceTag(&velocity, sl::kBufferTypeMotionVectors, sl::ResourceLifecycle::eValidUntilPresent, &render_extent),
+			sl::ResourceTag(&hudless, sl::kBufferTypeHUDLessColor, sl::ResourceLifecycle::eValidUntilPresent, &output_extent),
+		};
+		const sl::Result result = dlss.get_functions().set_tag_for_frame(*token, viewport, tags, 3, command_buffer);
+		if (result == sl::Result::eOk) {
+			sl::DLSSGOptions options;
+			options.mode = sl::DLSSGMode::eOn;
+			options.numFramesToGenerate = 1;
+			options.mvecDepthWidth = p_userdata->internal_size.width;
+			options.mvecDepthHeight = p_userdata->internal_size.height;
+			options.colorWidth = p_userdata->target_size.width;
+			options.colorHeight = p_userdata->target_size.height;
+			options.mvecBufferFormat = velocity.nativeFormat;
+			options.depthBufferFormat = depth.nativeFormat;
+			options.hudLessBufferFormat = hudless.nativeFormat;
+			dlss.frame_generation_prepare(p_userdata->viewport, options);
+		} else {
+			ERR_PRINT_ONCE(vformat("DLSS: could not tag the Frame Generation inputs (Streamline error %d).", (int)result));
+		}
+	}
+	p_userdata->owner->frame_generation_args_allocator.free(p_userdata);
 }
 
 DLSSEffect::DLSSEffect() {}

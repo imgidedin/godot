@@ -471,9 +471,10 @@ private:
 		int pre_transform_rotation_degrees = 0;
 		uint32_t image_index = 0;
 #ifdef WINDOWS_ENABLED
-		bool frame_generation_wanted = false;
+		FrameGeneration frame_generation_wanted = FRAME_GENERATION_NONE;
 		VkFormat frame_generation_hudless_format = VK_FORMAT_UNDEFINED;
 		FSRFrameGenerationVulkan::SwapChain frame_generation; // In use when its contexts exist.
+		bool dlss_frame_generation = false; // Created with DLSS Frame Generation hooked.
 #endif
 #ifdef ANDROID_ENABLED
 		uint64_t refresh_duration = 0;
@@ -875,8 +876,9 @@ private:
 
 public:
 	FSRUpscalingVulkan &get_fsr_upscaling() { return fsr_upscaling; }
-	virtual void swap_chain_set_frame_generation(SwapChainID p_swap_chain, bool p_enabled, DataFormat p_hudless_format) override final;
-	virtual bool swap_chain_is_generating_frames(SwapChainID p_swap_chain) override final;
+	virtual void swap_chain_set_frame_generation(SwapChainID p_swap_chain, FrameGeneration p_frame_generation, DataFormat p_hudless_format) override final;
+	virtual FrameGeneration swap_chain_get_frame_generation(SwapChainID p_swap_chain) override final;
+	virtual void latency_marker(LatencyMarker p_marker, uint64_t p_frame) override final;
 	// The frame generation inputs of this frame, recorded into p_command_buffer (in a driver callback).
 	void swap_chain_dispatch_frame_generation(SwapChainID p_swap_chain, CommandBufferID p_command_buffer, const FSRFrameGenerationVulkan::FrameInputs &p_inputs);
 	DLSSVulkan &get_dlss() { return context_driver->get_dlss(); }

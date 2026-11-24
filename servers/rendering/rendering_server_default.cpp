@@ -30,6 +30,7 @@
 
 #include "rendering_server_default.h"
 
+#include "core/config/engine.h"
 #include "core/object/callable_mp.h"
 #include "core/os/os.h"
 #include "core/profiling/profiling.h"
@@ -73,7 +74,10 @@ void RenderingServerDefault::request_frame_drawn_callback(const Callable &p_call
 	frame_drawn_callbacks.push_back(p_callable);
 }
 
-void RenderingServerDefault::_draw(bool p_swap_buffers, double frame_step) {
+void RenderingServerDefault::_draw(bool p_swap_buffers, double frame_step, uint64_t p_frame) {
+	if (RD::get_singleton()) {
+		RD::get_singleton()->latency_marker(RD::LATENCY_MARKER_RENDER_SUBMIT_START, p_frame);
+	}
 	GodotProfileZoneGroupedFirst(_profile_zone, "rasterizer->begin_frame");
 	RSG::rasterizer->begin_frame(frame_step);
 
@@ -478,10 +482,12 @@ void RenderingServerDefault::draw(bool p_present, double frame_step) {
 	// Needs to be done before changes is reset to 0, to not force the editor to redraw.
 	RS::get_singleton()->emit_signal(SNAME("frame_pre_draw"));
 	changes = 0;
+	// The frame's index goes with it to the render thread (latency markers).
+	const uint64_t frame = Engine::get_singleton()->get_frames_drawn();
 	if (create_thread) {
-		command_queue.push(this, &RenderingServerDefault::_draw, p_present, frame_step);
+		command_queue.push(this, &RenderingServerDefault::_draw, p_present, frame_step, frame);
 	} else {
-		_draw(p_present, frame_step);
+		_draw(p_present, frame_step, frame);
 	}
 }
 

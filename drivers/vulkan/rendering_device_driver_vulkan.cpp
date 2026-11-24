@@ -3394,6 +3394,10 @@ Error RenderingDeviceDriverVulkan::command_queue_execute_and_present(CommandQueu
 		present_info.pResults = results.ptr();
 
 #ifdef WINDOWS_ENABLED
+		if (dlss_device) {
+			get_dlss().present_begin();
+		}
+
 		uint32_t generating = UINT32_MAX;
 		for (uint32_t i = 0; i < p_swap_chains.size(); i++) {
 			if (((SwapChain *)(p_swap_chains[i].id))->frame_generation.swap_chain_context != nullptr) {
@@ -3497,6 +3501,11 @@ Error RenderingDeviceDriverVulkan::command_queue_execute_and_present(CommandQueu
 
 			device_queue.submit_mutex.unlock();
 		}
+#ifdef WINDOWS_ENABLED
+		if (dlss_device) {
+			get_dlss().present_end();
+		}
+#endif
 
 		// Set the index to an invalid value. If any of the swap chains returned out of date, indicate it should be resized the next time it's acquired.
 		bool any_result_is_out_of_date = false;
@@ -3802,6 +3811,10 @@ void RenderingDeviceDriverVulkan::_swap_chain_release(SwapChain *swap_chain) {
 	swap_chain->framebuffers.clear();
 
 #ifdef WINDOWS_ENABLED
+	if (swap_chain->dlss_frame_generation) {
+		get_dlss().frame_generation_before_release();
+		swap_chain->dlss_frame_generation = false;
+	}
 	if (swap_chain->frame_generation.swap_chain_context != nullptr) {
 		// AMD's swapchain: it goes with its contexts (after its pending presents).
 		fsr_frame_generation.destroy(swap_chain->frame_generation);
@@ -4025,7 +4038,18 @@ Error RenderingDeviceDriverVulkan::swap_chain_resize(CommandQueueID p_cmd_queue,
 	swap_create_info.clipped = true;
 	bool generating_frames = false;
 #ifdef WINDOWS_ENABLED
-	if (swap_chain->frame_generation_wanted && fsr_frame_generation.is_available() && context_driver->queue_family_supports_present(physical_device, frame_generation_queues[0].family, swap_chain->surface)) {
+	if (dlss_device && (frame_generation_swap_chains.is_empty() || frame_generation_swap_chains.has(swap_chain))) {
+		// DLSS Frame Generation hooks the swap chains created while it is loaded (it renders them
+		// off-screen and presents from its own queue), so it is loaded only for the one that uses it
+		// (the old one was released above, as Streamline asks).
+		DLSSVulkan &dlss = get_dlss();
+		dlss.set_frame_generation_loaded(swap_chain->frame_generation_wanted == FRAME_GENERATION_DLSS && dlss.is_frame_generation_available());
+		swap_chain->dlss_frame_generation = swap_chain->frame_generation_wanted == FRAME_GENERATION_DLSS && dlss.is_frame_generation_loaded();
+	} else if (dlss_device && get_dlss().is_frame_generation_loaded()) {
+		// NVIDIA's limit: Streamline hooks every swap chain made while it is loaded, and supports one.
+		WARN_PRINT_ONCE("DLSS Frame Generation is on in another window, and also takes this one over (it supports a single window).");
+	}
+	if (swap_chain->frame_generation_wanted == FRAME_GENERATION_FSR && fsr_frame_generation.is_available() && context_driver->queue_family_supports_present(physical_device, frame_generation_queues[0].family, swap_chain->surface)) {
 		// AMD's swapchain in place of this one (the frame generation presents through it).
 		Queue &game_queue = queue_families[command_queue->queue_family][command_queue->queue_index];
 		generating_frames = fsr_frame_generation.create(swap_chain->frame_generation, swap_create_info, game_queue.queue, command_queue->queue_family, &game_queue.submit_mutex, swap_chain->frame_generation_hudless_format) == OK;
@@ -7628,6 +7652,12 @@ bool RenderingDeviceDriverVulkan::has_feature(Features p_feature) {
 #else
 			return false;
 #endif
+		case SUPPORTS_DLSS_FRAME_GENERATION:
+#if defined(WINDOWS_ENABLED)
+			return dlss_device && get_dlss().is_frame_generation_available();
+#else
+			return false;
+#endif
 		case SUPPORTS_DLSS:
 #if defined(WINDOWS_ENABLED)
 			return dlss_device && context_driver->get_dlss().is_available();
@@ -7705,32 +7735,44 @@ RenderingDeviceDriverVulkan::RenderingDeviceDriverVulkan(RenderingContextDriverV
 }
 
 #ifdef WINDOWS_ENABLED
-void RenderingDeviceDriverVulkan::swap_chain_set_frame_generation(SwapChainID p_swap_chain, bool p_enabled, DataFormat p_hudless_format) {
+void RenderingDeviceDriverVulkan::swap_chain_set_frame_generation(SwapChainID p_swap_chain, FrameGeneration p_frame_generation, DataFormat p_hudless_format) {
 	SwapChain *swap_chain = (SwapChain *)(p_swap_chain.id);
-	const VkFormat hudless_format = p_enabled ? RD_TO_VK_FORMAT[p_hudless_format] : VK_FORMAT_UNDEFINED;
-	if (swap_chain->frame_generation_wanted == p_enabled && swap_chain->frame_generation_hudless_format == hudless_format) {
+	const bool enabled = p_frame_generation != FRAME_GENERATION_NONE;
+	const VkFormat hudless_format = enabled ? RD_TO_VK_FORMAT[p_hudless_format] : VK_FORMAT_UNDEFINED;
+	if (swap_chain->frame_generation_wanted == p_frame_generation && swap_chain->frame_generation_hudless_format == hudless_format) {
 		return;
 	}
-	if (p_enabled && !swap_chain->frame_generation_wanted) {
-		// One window at a time (AMD's DLL generates frames for one swapchain).
+	if (enabled && swap_chain->frame_generation_wanted == FRAME_GENERATION_NONE) {
+		// One window at a time (both generate frames for a single swap chain).
 		for (const SwapChain *other : frame_generation_swap_chains) {
 			if (other != swap_chain) {
-				WARN_PRINT_ONCE("AMD FSR Frame Generation: already on in another window.");
+				WARN_PRINT_ONCE("Frame generation is already on in another window.");
 				return;
 			}
 		}
 		frame_generation_swap_chains.insert(swap_chain);
-	} else if (!p_enabled) {
+	} else if (!enabled) {
 		frame_generation_swap_chains.erase(swap_chain);
 	}
-	swap_chain->frame_generation_wanted = p_enabled;
+	swap_chain->frame_generation_wanted = p_frame_generation;
 	swap_chain->frame_generation_hudless_format = hudless_format;
 	// It starts or stops with a new swap chain.
 	context_driver->surface_set_needs_resize(swap_chain->surface, true);
 }
 
-bool RenderingDeviceDriverVulkan::swap_chain_is_generating_frames(SwapChainID p_swap_chain) {
-	return ((SwapChain *)(p_swap_chain.id))->frame_generation.swap_chain_context != nullptr;
+RenderingDeviceDriverVulkan::FrameGeneration RenderingDeviceDriverVulkan::swap_chain_get_frame_generation(SwapChainID p_swap_chain) {
+	const SwapChain *swap_chain = (const SwapChain *)(p_swap_chain.id);
+	if (swap_chain->frame_generation.swap_chain_context != nullptr) {
+		return FRAME_GENERATION_FSR;
+	}
+	return swap_chain->dlss_frame_generation ? FRAME_GENERATION_DLSS : FRAME_GENERATION_NONE;
+}
+
+void RenderingDeviceDriverVulkan::latency_marker(LatencyMarker p_marker, uint64_t p_frame) {
+	if (dlss_device) {
+		static const DLSSVulkan::LatencyMarker markers[] = { DLSSVulkan::LATENCY_FRAME_START, DLSSVulkan::LATENCY_SIMULATION_END, DLSSVulkan::LATENCY_RENDER_SUBMIT_START };
+		get_dlss().latency_marker(markers[p_marker], p_frame);
+	}
 }
 
 void RenderingDeviceDriverVulkan::swap_chain_dispatch_frame_generation(SwapChainID p_swap_chain, CommandBufferID p_command_buffer, const FSRFrameGenerationVulkan::FrameInputs &p_inputs) {

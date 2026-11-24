@@ -5449,19 +5449,23 @@ int RenderingDevice::screen_get_pre_rotation_degrees(DisplayServerEnums::WindowI
 	return driver->swap_chain_get_pre_rotation_degrees(it->value);
 }
 
-void RenderingDevice::screen_set_frame_generation(DisplayServerEnums::WindowID p_screen, bool p_enabled, DataFormat p_hudless_format) {
+void RenderingDevice::screen_set_frame_generation(DisplayServerEnums::WindowID p_screen, FrameGeneration p_frame_generation, DataFormat p_hudless_format) {
 	_THREAD_SAFE_METHOD_
 
 	HashMap<DisplayServerEnums::WindowID, RDD::SwapChainID>::ConstIterator it = screen_swap_chains.find(p_screen);
 	ERR_FAIL_COND_MSG(it == screen_swap_chains.end(), "A swap chain was not created for the screen.");
-	driver->swap_chain_set_frame_generation(it->value, p_enabled, p_hudless_format);
+	driver->swap_chain_set_frame_generation(it->value, p_frame_generation, p_hudless_format);
 }
 
-bool RenderingDevice::screen_is_generating_frames(DisplayServerEnums::WindowID p_screen) const {
+RenderingDevice::FrameGeneration RenderingDevice::screen_get_frame_generation(DisplayServerEnums::WindowID p_screen) const {
 	_THREAD_SAFE_METHOD_
 
 	HashMap<DisplayServerEnums::WindowID, RDD::SwapChainID>::ConstIterator it = screen_swap_chains.find(p_screen);
-	return it != screen_swap_chains.end() && driver->swap_chain_is_generating_frames(it->value);
+	return it != screen_swap_chains.end() ? driver->swap_chain_get_frame_generation(it->value) : FRAME_GENERATION_NONE;
+}
+
+void RenderingDevice::latency_marker(LatencyMarker p_marker, uint64_t p_frame) {
+	driver->latency_marker(p_marker, p_frame);
 }
 
 RDD::SwapChainID RenderingDevice::screen_get_driver_swap_chain(DisplayServerEnums::WindowID p_screen) const {
@@ -9806,6 +9810,7 @@ void RenderingDevice::_bind_methods() {
 	BIND_ENUM_CONSTANT(SUPPORTS_FSR_UPSCALING);
 	BIND_ENUM_CONSTANT(SUPPORTS_DLSS);
 	BIND_ENUM_CONSTANT(SUPPORTS_FSR_FRAME_GENERATION);
+	BIND_ENUM_CONSTANT(SUPPORTS_DLSS_FRAME_GENERATION);
 
 	BIND_ENUM_CONSTANT(LIMIT_MAX_BOUND_UNIFORM_SETS);
 	BIND_ENUM_CONSTANT(LIMIT_MAX_FRAMEBUFFER_COLOR_ATTACHMENTS);

@@ -490,12 +490,16 @@ public:
 	// Tells the swapchain the max_fps so it can use the proper frame pacing.
 	// Android uses this with Swappy library. Some implementations or platforms may ignore this hint.
 	virtual void swap_chain_set_max_fps(SwapChainID p_swap_chain, int p_max_fps) {}
-	// Frame generation (a generated frame presented between two rendered ones): asked for or not; it
-	// starts or stops when the swap chain is next recreated. p_hudless_format is the format of the
-	// image before the UI that the renderer gives each frame.
-	virtual void swap_chain_set_frame_generation(SwapChainID p_swap_chain, bool p_enabled, DataFormat p_hudless_format) {}
-	// Whether the swap chain generates frames now.
-	virtual bool swap_chain_is_generating_frames(SwapChainID p_swap_chain) { return false; }
+	// Frame generation (a generated frame presented between two rendered ones): which one is asked
+	// for; it starts or stops when the swap chain is next recreated. p_hudless_format is the format of
+	// the image before the UI that the renderer gives each frame.
+	virtual void swap_chain_set_frame_generation(SwapChainID p_swap_chain, FrameGeneration p_frame_generation, DataFormat p_hudless_format) {}
+	// The frame generation the swap chain runs now.
+	virtual FrameGeneration swap_chain_get_frame_generation(SwapChainID p_swap_chain) { return FRAME_GENERATION_NONE; }
+
+	// A step of frame p_frame (see LatencyMarker). Thread-safe: the main thread gives the frame start
+	// and the simulation end.
+	virtual void latency_marker(LatencyMarker p_marker, uint64_t p_frame) {}
 
 	// Wait until all rendering associated to the swap chain is finished before deleting it.
 	virtual void swap_chain_free(SwapChainID p_swap_chain) = 0;

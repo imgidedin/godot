@@ -1098,8 +1098,8 @@ Patches:
 Files extracted from upstream source:
 
 - `include/` from the SDK: `sl.h`, `sl_appidentity.h`, `sl_consts.h`, `sl_core_api.h`,
-  `sl_core_types.h`, `sl_device_wrappers.h`, `sl_dlss.h`, `sl_result.h`,
-  `sl_security.h`, `sl_struct.h`, `sl_version.h`
+  `sl_core_types.h`, `sl_device_wrappers.h`, `sl_dlss.h`, `sl_dlss_g.h`, `sl_pcl.h`,
+  `sl_reflex.h`, `sl_result.h`, `sl_security.h`, `sl_struct.h`, `sl_version.h`
 - `license.txt` as `LICENSE.txt`
 
 Line endings converted to LF.

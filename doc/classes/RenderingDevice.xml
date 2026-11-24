@@ -2855,6 +2855,10 @@
 			Support for AMD FSR Frame Generation through the AMD FSR API: a generated frame presented between two rendered ones (see [member ProjectSettings.rendering/frame_generation/mode]). Requires the signed AMD FSR API DLLs, [code]amd_fidelityfx_framegeneration_vk.dll[/code] included, next to the executable when the engine starts.
 			[b]Note:[/b] This is currently only supported when using Vulkan on Windows.
 		</constant>
+		<constant name="SUPPORTS_DLSS_FRAME_GENERATION" value="17" enum="Features">
+			Support for NVIDIA DLSS Frame Generation through NVIDIA Streamline (RTX 40 and newer): a generated frame presented between two rendered ones (see [member ProjectSettings.rendering/frame_generation/mode]). Requires the signed Streamline DLLs, [code]sl.dlss_g.dll[/code], [code]nvngx_dlssg.dll[/code], [code]sl.reflex.dll[/code] and [code]sl.pcl.dll[/code] included, next to the executable when the engine starts.
+			[b]Note:[/b] This is currently only supported when using Vulkan on Windows.
+		</constant>
 		<constant name="SUPPORTS_DLSS" value="15" enum="Features">
 			Support for NVIDIA DLSS Super Resolution through NVIDIA Streamline. Requires an NVIDIA RTX GPU and the signed Streamline and DLSS DLLs ([code]sl.interposer.dll[/code], [code]sl.common.dll[/code], [code]sl.dlss.dll[/code] and [code]nvngx_dlss.dll[/code]) next to the executable.
 			[b]Note:[/b] This is currently only supported when using Vulkan on Windows.

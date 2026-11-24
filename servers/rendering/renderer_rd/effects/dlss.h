@@ -42,6 +42,7 @@
 #include "core/math/transform_3d.h"
 #include "core/templates/local_vector.h"
 #include "core/templates/paged_allocator.h"
+#include "servers/display/display_server_enums.h"
 #include "servers/rendering/rendering_device.h"
 
 namespace RendererRD {
@@ -59,13 +60,12 @@ class DLSSContext {
 
 class DLSSEffect {
 	struct CallbackArgs;
+	struct FrameGenerationArgs;
 
 	PagedAllocator<CallbackArgs, true, 16> args_allocator;
+	PagedAllocator<FrameGenerationArgs, true, 16> frame_generation_args_allocator;
 
 	uint32_t next_viewport = 1;
-	// Streamline's frame token, one per frame drawn.
-	void *frame_token = nullptr; // sl::FrameToken *.
-	uint64_t frame_token_frame = UINT64_MAX;
 
 	// A viewport's resources can only go once the GPU is done with the frames that used them.
 	struct PendingFree {
@@ -76,6 +76,7 @@ class DLSSEffect {
 	void _process_pending_frees(bool p_all);
 
 	static void callback(RDD *p_driver, RDD::CommandBufferID p_command_buffer, CallbackArgs *p_userdata);
+	static void frame_generation_callback(RDD *p_driver, RDD::CommandBufferID p_command_buffer, FrameGenerationArgs *p_userdata);
 
 public:
 	// The DLSS quality mode whose render size range holds p_internal_size (DLAA at native size).
@@ -104,6 +105,19 @@ public:
 	};
 
 	void upscale(const Parameters &p_params);
+
+	// DLSS Frame Generation from this frame, after upscale() (with its camera constants): the inputs
+	// are tagged until the present, where it generates the frame before this one.
+	struct FrameGenerationParameters {
+		DisplayServerEnums::WindowID screen = DisplayServerEnums::INVALID_WINDOW_ID;
+		DLSSContext *context = nullptr;
+		Size2i internal_size;
+		RID depth;
+		RID velocity;
+		RID hudless; // The image before the UI, target size.
+	};
+
+	void generate_frames(const FrameGenerationParameters &p_params);
 
 	DLSSEffect();
 	~DLSSEffect();

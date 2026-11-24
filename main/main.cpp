@@ -5073,6 +5073,10 @@ bool Main::iteration() {
 	NavigationServer3D::get_singleton()->process(process_step * time_scale);
 #endif // NAVIGATION_3D_DISABLED
 
+	if (RD::get_singleton()) {
+		RD::get_singleton()->latency_marker(RD::LATENCY_MARKER_SIMULATION_END, Engine::get_singleton()->get_frames_drawn());
+	}
+
 	GodotProfileZoneGrouped(_profile_zone, "RenderingServer::sync");
 	RenderingServer::get_singleton()->sync(); //sync if still drawing from previous frames.
 

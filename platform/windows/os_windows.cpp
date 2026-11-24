@@ -2349,6 +2349,12 @@ void OS_Windows::run() {
 	while (true) {
 		GodotProfileFrameMark;
 		GodotProfileZone("OS_Windows::run");
+#if defined(RD_ENABLED)
+		// The frame starts before its input is read (the low latency mode of NVIDIA Reflex waits here).
+		if (RenderingDevice::get_singleton()) {
+			RenderingDevice::get_singleton()->latency_marker(RenderingDevice::LATENCY_MARKER_FRAME_START, Engine::get_singleton()->get_frames_drawn());
+		}
+#endif
 		DisplayServer::get_singleton()->process_events(); // get rid of pending events
 		if (Main::iteration()) {
 			break;

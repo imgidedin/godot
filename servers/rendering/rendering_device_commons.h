@@ -1042,6 +1042,24 @@ public:
 		SUPPORTS_DLSS,
 		// AMD FSR Frame Generation through the AMD FSR API.
 		SUPPORTS_FSR_FRAME_GENERATION,
+		// NVIDIA DLSS Frame Generation through NVIDIA Streamline.
+		SUPPORTS_DLSS_FRAME_GENERATION,
+	};
+
+	// Frame generation on a swap chain (a generated frame presented between two rendered ones).
+	enum FrameGeneration {
+		FRAME_GENERATION_NONE,
+		FRAME_GENERATION_FSR, // AMD FSR Frame Generation.
+		FRAME_GENERATION_DLSS, // NVIDIA DLSS Frame Generation.
+	};
+
+	// The steps of a frame for latency measurement and reduction (NVIDIA Reflex and PC Latency), with
+	// the frame's index (Engine::get_frames_drawn() when it starts). The submit end and the present
+	// come from the driver.
+	enum LatencyMarker {
+		LATENCY_MARKER_FRAME_START, // Before the frame's input is read (the low latency mode waits here).
+		LATENCY_MARKER_SIMULATION_END,
+		LATENCY_MARKER_RENDER_SUBMIT_START,
 	};
 
 	enum SubgroupOperations {

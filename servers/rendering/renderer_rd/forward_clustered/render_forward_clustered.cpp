@@ -2536,9 +2536,11 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 #endif
 
 #ifdef FSR_UPSCALING_ENABLED
-	// AMD FSR Upscaling this frame: its R32 depth copy and its history reset (for the frame generation).
+	// The upscaling of this frame, for the frame generation: AMD FSR (its R32 depth copy and history
+	// reset) or DLSS (its camera constants).
 	bool fsr_upscaled = false;
 	bool fsr_upscaling_reset = false;
+	RendererRD::DLSSContext *dlss_upscaled = nullptr;
 #endif
 	if (rb_data.is_valid() && (using_upscaling || using_taa)) {
 		if (scale_type == SCALE_FSR2) {
@@ -2692,6 +2694,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 				}
 
 				RD::get_singleton()->draw_command_end_label();
+				dlss_upscaled = context;
 			}
 #endif
 		} else if (using_taa) {
@@ -2713,8 +2716,14 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		// Frame generation from this frame (RendererViewport asks for it on the window): the image
 		// before the UI (the render target now, before the canvas is drawn on it) and the inputs.
 		const int32_t frame_generation_screen = rb->get_frame_generation_screen();
-		if (frame_generation_screen >= 0 && fsr_upscaled && rb->get_view_count() == 1 && RD::get_singleton()->screen_is_generating_frames(frame_generation_screen)) {
-			RD::get_singleton()->draw_command_begin_label("AMD FSR Frame Generation");
+		const RD::FrameGeneration frame_generation = (frame_generation_screen >= 0 && rb->get_view_count() == 1) ? RD::get_singleton()->screen_get_frame_generation(frame_generation_screen) : RD::FRAME_GENERATION_NONE;
+		// DLSS's: the image before the UI must be the backbuffer's (a viewport stretched or letterboxed
+		// into the window is not); without its inputs, no frame is generated (see the present). (AMD's
+		// checks it against its swapchain.)
+		const bool dlss_fits = frame_generation != RD::FRAME_GENERATION_DLSS || rb->get_target_size() == Size2i(RD::get_singleton()->screen_get_width(frame_generation_screen), RD::get_singleton()->screen_get_height(frame_generation_screen));
+		if (frame_generation == RD::FRAME_GENERATION_DLSS && dlss_upscaled != nullptr && !dlss_fits) {
+			WARN_PRINT_ONCE("NVIDIA DLSS Frame Generation: the 3D image is not the size of the window; frames are not generated.");
+		} else if ((frame_generation == RD::FRAME_GENERATION_FSR && fsr_upscaled) || (frame_generation == RD::FRAME_GENERATION_DLSS && dlss_upscaled != nullptr)) {
 			RID render_target = RendererRD::TextureStorage::get_singleton()->render_target_get_rd_texture(rb->get_render_target());
 			const RD::TextureFormat rt_format = RD::get_singleton()->texture_get_format(render_target);
 			if (!rb->has_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_FRAME_GENERATION_HUDLESS)) {
@@ -2723,27 +2732,41 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			RID hudless = rb->get_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_FRAME_GENERATION_HUDLESS);
 			RD::get_singleton()->texture_copy(render_target, hudless, Vector3(), Vector3(), Vector3(rt_format.width, rt_format.height, 1), 0, 0, 0, 0);
 
-			// The depth as R32, as FSR Upscaling copied it this frame.
-			RID depth = rb_data->get_fsr_upscaling_depth(0);
+			if (frame_generation == RD::FRAME_GENERATION_FSR) {
+				RD::get_singleton()->draw_command_begin_label("AMD FSR Frame Generation");
+				// The depth as R32, as FSR Upscaling copied it this frame.
+				RID depth = rb_data->get_fsr_upscaling_depth(0);
 
-			real_t fov = p_render_data->scene_data->cam_projection.get_fov();
-			real_t aspect = p_render_data->scene_data->cam_projection.get_aspect();
-			RendererRD::FSRFrameGenerationEffect::Parameters params;
-			params.screen = frame_generation_screen;
-			params.internal_size = rb->get_internal_size();
-			params.target_size = rb->get_target_size();
-			params.depth = depth;
-			params.velocity = rb->get_velocity_buffer(false, 0);
-			params.hudless = hudless;
-			params.jitter = p_render_data->scene_data->taa_jitter * Vector2(rb->get_internal_size()) * 0.5f;
-			params.delta_time = float(time_step);
-			params.z_near = p_render_data->scene_data->z_near;
-			params.z_far = p_render_data->scene_data->z_far;
-			params.fovy = Math::deg_to_rad(p_render_data->scene_data->cam_projection.get_fovy(fov, 1.0 / aspect));
-			params.camera = p_render_data->scene_data->cam_transform;
-			params.reset = fsr_upscaling_reset;
-			fsr_frame_generation_effect->dispatch(params);
-			RD::get_singleton()->draw_command_end_label();
+				real_t fov = p_render_data->scene_data->cam_projection.get_fov();
+				real_t aspect = p_render_data->scene_data->cam_projection.get_aspect();
+				RendererRD::FSRFrameGenerationEffect::Parameters params;
+				params.screen = frame_generation_screen;
+				params.internal_size = rb->get_internal_size();
+				params.target_size = rb->get_target_size();
+				params.depth = depth;
+				params.velocity = rb->get_velocity_buffer(false, 0);
+				params.hudless = hudless;
+				params.jitter = p_render_data->scene_data->taa_jitter * Vector2(rb->get_internal_size()) * 0.5f;
+				params.delta_time = float(time_step);
+				params.z_near = p_render_data->scene_data->z_near;
+				params.z_far = p_render_data->scene_data->z_far;
+				params.fovy = Math::deg_to_rad(p_render_data->scene_data->cam_projection.get_fovy(fov, 1.0 / aspect));
+				params.camera = p_render_data->scene_data->cam_transform;
+				params.reset = fsr_upscaling_reset;
+				fsr_frame_generation_effect->dispatch(params);
+				RD::get_singleton()->draw_command_end_label();
+			} else {
+				RD::get_singleton()->draw_command_begin_label("NVIDIA DLSS Frame Generation");
+				RendererRD::DLSSEffect::FrameGenerationParameters params;
+				params.screen = frame_generation_screen;
+				params.context = dlss_upscaled;
+				params.internal_size = rb->get_internal_size();
+				params.depth = rb->get_depth_texture(0);
+				params.velocity = rb->get_velocity_buffer(false, 0);
+				params.hudless = hudless;
+				dlss_effect->generate_frames(params);
+				RD::get_singleton()->draw_command_end_label();
+			}
 		}
 #endif
 	}
