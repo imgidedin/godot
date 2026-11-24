@@ -58,6 +58,8 @@ struct Light {
 	uint32_t max_sdfgi_cascade = 2;
 	uint32_t cull_mask = 0xFFFFFFFF;
 	uint32_t shadow_caster_mask = 0xFFFFFFFF;
+	int split_cache_from = 0; // directional: splits from this one on are kept between frames (0: none)
+	float split_cache_margin = 0.2; // how much bigger those splits are fitted, so they keep covering the camera
 	uint32_t split_caster_mask[4] = { 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF }; // directional: casters per split, on top of shadow_caster_mask
 	bool distance_fade = false;
 	real_t distance_fade_begin = 40.0;
@@ -336,6 +338,9 @@ public:
 	virtual uint32_t light_get_shadow_caster_mask(RID p_light) const override;
 	virtual void light_directional_set_split_caster_mask(RID p_light, int p_split, uint32_t p_caster_mask) override;
 	virtual uint32_t light_directional_get_split_caster_mask(RID p_light, int p_split) const override;
+	virtual void light_directional_set_split_cache(RID p_light, int p_from_split, float p_margin) override;
+	virtual int light_directional_get_split_cache_from(RID p_light) const override;
+	virtual float light_directional_get_split_cache_margin(RID p_light) const override;
 	virtual void light_set_bake_mode(RID p_light, RSE::LightBakeMode p_bake_mode) override;
 	virtual void light_set_max_sdfgi_cascade(RID p_light, uint32_t p_cascade) override {}
 

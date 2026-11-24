@@ -358,6 +358,31 @@ uint32_t LightStorage::light_directional_get_split_caster_mask(RID p_light, int 
 	return light->split_caster_mask[p_split];
 }
 
+void LightStorage::light_directional_set_split_cache(RID p_light, int p_from_split, float p_margin) {
+	Light *light = light_owner.get_or_null(p_light);
+	ERR_FAIL_NULL(light);
+
+	light->split_cache_from = MAX(p_from_split, 0);
+	light->split_cache_margin = MAX(p_margin, 0.0f);
+
+	light->version++;
+	light->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_LIGHT);
+}
+
+int LightStorage::light_directional_get_split_cache_from(RID p_light) const {
+	Light *light = light_owner.get_or_null(p_light);
+	ERR_FAIL_NULL_V(light, 0);
+
+	return light->split_cache_from;
+}
+
+float LightStorage::light_directional_get_split_cache_margin(RID p_light) const {
+	Light *light = light_owner.get_or_null(p_light);
+	ERR_FAIL_NULL_V(light, 0.0);
+
+	return light->split_cache_margin;
+}
+
 void LightStorage::light_set_bake_mode(RID p_light, RSE::LightBakeMode p_bake_mode) {
 	Light *light = light_owner.get_or_null(p_light);
 	ERR_FAIL_NULL(light);
@@ -2792,6 +2817,7 @@ void LightStorage::directional_shadow_atlas_set_size(int p_size, bool p_16_bits)
 
 	directional_shadow.size = p_size;
 	directional_shadow.use_16_bits = p_16_bits;
+	directional_shadow.version++; // (the kept splits go with the old atlas)
 
 	if (directional_shadow.depth.is_valid()) {
 		RD::get_singleton()->free_rid(directional_shadow.depth);

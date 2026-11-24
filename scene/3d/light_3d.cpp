@@ -591,6 +591,25 @@ uint32_t DirectionalLight3D::get_split_caster_mask(int p_split) const {
 	return split_caster_mask[p_split];
 }
 
+// Keeps the splits from `p_from_split` on between frames: one of them is redrawn per frame, in turn,
+// and the others are reused while they still cover the camera (they are fitted `p_margin` bigger, so
+// the camera can move and turn a little). A static world under a slow light pays for the near splits
+// and one far split per frame. Casters that move are updated in the far splits only on their turn.
+// 0 turns it off.
+void DirectionalLight3D::set_split_cache(int p_from_split, float p_margin) {
+	split_cache_from = MAX(p_from_split, 0);
+	split_cache_margin = MAX(p_margin, 0.0f);
+	RS::get_singleton()->light_directional_set_split_cache(light, split_cache_from, split_cache_margin);
+}
+
+int DirectionalLight3D::get_split_cache_from() const {
+	return split_cache_from;
+}
+
+float DirectionalLight3D::get_split_cache_margin() const {
+	return split_cache_margin;
+}
+
 void DirectionalLight3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_shadow_mode", "mode"), &DirectionalLight3D::set_shadow_mode);
 	ClassDB::bind_method(D_METHOD("get_shadow_mode"), &DirectionalLight3D::get_shadow_mode);
@@ -603,6 +622,9 @@ void DirectionalLight3D::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("set_split_caster_mask", "split", "caster_mask"), &DirectionalLight3D::set_split_caster_mask);
 	ClassDB::bind_method(D_METHOD("get_split_caster_mask", "split"), &DirectionalLight3D::get_split_caster_mask);
+	ClassDB::bind_method(D_METHOD("set_split_cache", "from_split", "margin"), &DirectionalLight3D::set_split_cache);
+	ClassDB::bind_method(D_METHOD("get_split_cache_from"), &DirectionalLight3D::get_split_cache_from);
+	ClassDB::bind_method(D_METHOD("get_split_cache_margin"), &DirectionalLight3D::get_split_cache_margin);
 
 	ADD_GROUP("Directional Shadow", "directional_shadow_");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "directional_shadow_mode", PROPERTY_HINT_ENUM, "Orthogonal (Fast),PSSM 2 Splits (Average),PSSM 4 Splits (Slow)"), "set_shadow_mode", "get_shadow_mode");

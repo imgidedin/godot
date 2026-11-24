@@ -265,6 +265,30 @@ uint32_t LightStorage::light_directional_get_split_caster_mask(RID p_light, int 
 	return light->split_caster_mask[p_split];
 }
 
+void LightStorage::light_directional_set_split_cache(RID p_light, int p_from_split, float p_margin) {
+	Light *light = light_owner.get_or_null(p_light);
+	ERR_FAIL_NULL(light);
+
+	light->split_cache_from = MAX(p_from_split, 0);
+	light->split_cache_margin = MAX(p_margin, 0.0f);
+
+	light->version++;
+	light->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_LIGHT);
+}
+
+int LightStorage::light_directional_get_split_cache_from(RID p_light) const {
+	// Not here: this renderer clears the whole directional atlas every frame
+	// (update_directional_shadow_atlas), so no split can be kept from one frame to the next.
+	return 0;
+}
+
+float LightStorage::light_directional_get_split_cache_margin(RID p_light) const {
+	Light *light = light_owner.get_or_null(p_light);
+	ERR_FAIL_NULL_V(light, 0.0);
+
+	return light->split_cache_margin;
+}
+
 void LightStorage::light_set_distance_fade(RID p_light, bool p_enabled, float p_begin, float p_shadow, float p_length) {
 	Light *light = light_owner.get_or_null(p_light);
 	ERR_FAIL_NULL(light);

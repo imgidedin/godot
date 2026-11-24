@@ -689,6 +689,39 @@ public:
 	SpinLock visible_notifier_list_lock;
 	SelfList<InstanceVisibilityNotifierData>::List visible_notifier_list;
 
+	// A directional split kept from an earlier frame (DirectionalLight3D.set_split_cache): its camera
+	// and the box it covers, in the light's axes of then.
+	struct DirectionalCascadeCache {
+		bool valid = false;
+		Projection projection;
+		Transform3D transform;
+		real_t zfar = 0;
+		real_t shadow_texel_size = 0;
+		real_t bias_scale = 0;
+		Vector2 uv_scale;
+		Vector3 x_vec, y_vec, z_vec;
+		real_t x_min = 0, x_max = 0, y_min = 0, y_max = 0, z_min = 0, z_top = 0;
+
+		// Does it still cover the camera's slice (`p_endpoints`, its 8 corners) under the light's `p_z_vec`?
+		bool covers(const Vector3 *p_endpoints, const Vector3 &p_z_vec) const {
+			if (!valid || z_vec.dot(p_z_vec) < 0.99985) { // the light turned more than ~1 degree
+				return false;
+			}
+			// (the soft shadow filter reads a little around each point: 2% of the box to spare)
+			real_t pad_x = (x_max - x_min) * 0.02;
+			real_t pad_y = (y_max - y_min) * 0.02;
+			for (int j = 0; j < 8; j++) {
+				real_t x = x_vec.dot(p_endpoints[j]);
+				real_t y = y_vec.dot(p_endpoints[j]);
+				real_t z = z_vec.dot(p_endpoints[j]);
+				if (x < x_min + pad_x || x > x_max - pad_x || y < y_min + pad_y || y > y_max - pad_y || z < z_min || z > z_top) {
+					return false;
+				}
+			}
+			return true;
+		}
+	};
+
 	struct InstanceLightData : public InstanceBaseData {
 		RID instance;
 		uint64_t last_version;
@@ -704,6 +737,14 @@ public:
 		RSE::LightBakeMode bake_mode;
 		uint32_t max_sdfgi_cascade = 2;
 		uint32_t cull_mask = 0xFFFFFFFF;
+
+		// directional: the kept splits (DirectionalLight3D.set_split_cache)
+		DirectionalCascadeCache cascade_cache[4];
+		uint32_t cascade_turn = 0; // which kept split is redrawn this frame
+		uint64_t cascade_cache_generation = 0; // the atlas drawing they were in (directional_shadow_generation)
+		int cascade_cache_layout = -1; // splits, this light's place and the number of lights: where in the atlas
+		real_t cascade_cache_texture = 0;
+		uint32_t cascade_cache_atlas = 0; // the atlas version they were drawn in
 
 	private:
 		// Instead of a single dirty flag, we maintain a count
@@ -1008,6 +1049,10 @@ public:
 
 	RendererSceneRender::RenderShadowData render_shadow_data[MAX_UPDATE_SHADOWS];
 	uint32_t max_shadows_used = 0;
+	// Counts the drawings of the directional shadow atlas. A kept split is only reused if nothing else
+	// (another viewport) drew the atlas since its light did.
+	uint64_t directional_shadow_generation = 0;
+	int directional_shadow_lights = 0; // lights with directional shadow in this drawing
 
 	RendererSceneRender::RenderSDFGIData render_sdfgi_data[SDFGI_MAX_CASCADES * SDFGI_MAX_REGIONS_PER_CASCADE];
 	RendererSceneRender::RenderSDFGIUpdateData sdfgi_update_data;
@@ -1089,6 +1134,7 @@ public:
 	struct Cull {
 		struct Shadow {
 			RID light_instance;
+			Instance *instance = nullptr;
 			uint32_t caster_mask;
 			struct Cascade {
 				Frustum frustum;
@@ -1102,6 +1148,8 @@ public:
 				real_t range_begin;
 				Vector2 uv_scale;
 				uint32_t caster_mask; // the light's shadow_caster_mask and this split's
+				bool reuse = false; // kept from an earlier frame: not culled nor drawn (set_split_cache)
+				bool kept = false; // drawn to be kept: all casters in its box, none dropped by the camera
 
 			} cascades[RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES]; //max 4 cascades
 			uint32_t cascade_count;

@@ -84,6 +84,9 @@ public:
 	virtual uint32_t light_get_shadow_caster_mask(RID p_light) const override { return 0xFFFFFFFF; }
 	virtual void light_directional_set_split_caster_mask(RID p_light, int p_split, uint32_t p_caster_mask) override {}
 	virtual uint32_t light_directional_get_split_caster_mask(RID p_light, int p_split) const override { return 0xFFFFFFFF; }
+	virtual void light_directional_set_split_cache(RID p_light, int p_from_split, float p_margin) override {}
+	virtual int light_directional_get_split_cache_from(RID p_light) const override { return 0; }
+	virtual float light_directional_get_split_cache_margin(RID p_light) const override { return 0.0; }
 	virtual void light_set_bake_mode(RID p_light, RSE::LightBakeMode p_bake_mode) override {}
 	virtual void light_set_max_sdfgi_cascade(RID p_light, uint32_t p_cascade) override {}
 

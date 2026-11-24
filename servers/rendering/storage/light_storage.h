@@ -65,6 +65,9 @@ public:
 	virtual uint32_t light_get_shadow_caster_mask(RID p_light) const = 0;
 	virtual void light_directional_set_split_caster_mask(RID p_light, int p_split, uint32_t p_caster_mask) = 0;
 	virtual uint32_t light_directional_get_split_caster_mask(RID p_light, int p_split) const = 0;
+	virtual void light_directional_set_split_cache(RID p_light, int p_from_split, float p_margin) = 0;
+	virtual int light_directional_get_split_cache_from(RID p_light) const = 0;
+	virtual float light_directional_get_split_cache_margin(RID p_light) const = 0;
 	virtual void light_set_bake_mode(RID p_light, RSE::LightBakeMode p_bake_mode) = 0;
 	virtual void light_set_max_sdfgi_cascade(RID p_light, uint32_t p_cascade) = 0;
 
@@ -210,6 +213,8 @@ public:
 	virtual void shadow_atlas_update(RID p_atlas) = 0;
 
 	virtual void directional_shadow_atlas_set_size(int p_size, bool p_16_bits = true) = 0;
+	// Goes up whenever the directional atlas is dropped (what was in it is gone: no kept split survives it).
+	virtual uint32_t directional_shadow_get_version() const { return 0; }
 	virtual int get_directional_light_shadow_size(RID p_light_instance) = 0;
 	virtual void set_directional_shadow_count(int p_count) = 0;
 };

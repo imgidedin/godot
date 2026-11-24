@@ -2194,6 +2194,24 @@ void RendererSceneCull::_light_instance_setup_directional_shadow(int p_shadow_in
 	cull.shadows[p_shadow_index].cascade_count = splits;
 	cull.shadows[p_shadow_index].light_instance = light->instance;
 	cull.shadows[p_shadow_index].caster_mask = RSG::light_storage->light_get_shadow_caster_mask(p_instance->base);
+	cull.shadows[p_shadow_index].instance = p_instance;
+
+	// Kept splits (DirectionalLight3D.set_split_cache): from split `cache_from` on, one is drawn per frame,
+	// in turn, and the others are reused while they still cover the camera's slice. They are only good
+	// while the atlas holds what this light drew last (no other drawing since) in the same place.
+	int cache_from = RSG::light_storage->light_directional_get_split_cache_from(p_instance->base);
+	real_t cache_margin = RSG::light_storage->light_directional_get_split_cache_margin(p_instance->base);
+	bool use_cache = cache_from > 0 && cache_from < splits;
+	int layout = splits * 100 + p_shadow_index * 10 + directional_shadow_lights;
+	if (!use_cache || light->cascade_cache_generation != directional_shadow_generation || light->cascade_cache_layout != layout || light->cascade_cache_texture != texture_size || light->cascade_cache_atlas != RSG::light_storage->directional_shadow_get_version()) {
+		for (int i = 0; i < 4; i++) {
+			light->cascade_cache[i].valid = false;
+		}
+	}
+	light->cascade_cache_layout = layout;
+	light->cascade_cache_texture = texture_size;
+	light->cascade_cache_atlas = RSG::light_storage->directional_shadow_get_version();
+	int turn = use_cache ? cache_from + int(light->cascade_turn++ % uint32_t(MAX(splits - cache_from, 2))) : -1; // (one kept split alone: every other frame)
 
 	for (int i = 0; i < splits; i++) {
 		RENDER_TIMESTAMP("Cull DirectionalLight3D, Split " + itos(i));
@@ -2227,6 +2245,25 @@ void RendererSceneCull::_light_instance_setup_directional_shadow(int p_shadow_in
 		Vector3 y_vec = transform.basis.get_column(Vector3::AXIS_Y).normalized();
 		Vector3 z_vec = transform.basis.get_column(Vector3::AXIS_Z).normalized();
 		//z_vec points against the camera, like in default opengl
+
+		bool kept = use_cache && i >= cache_from;
+		cull.shadows[p_shadow_index].cascades[i].kept = kept;
+		cull.shadows[p_shadow_index].cascades[i].reuse = false;
+		if (kept && i != turn && light->cascade_cache[i].covers(endpoints, z_vec)) {
+			// reused as drawn: its camera and box of then (the shader reads it with them)
+			const DirectionalCascadeCache &cc = light->cascade_cache[i];
+			Cull::Shadow::Cascade &c = cull.shadows[p_shadow_index].cascades[i];
+			c.reuse = true;
+			c.projection = cc.projection;
+			c.transform = cc.transform;
+			c.zfar = cc.zfar;
+			c.split = distances[i + 1];
+			c.shadow_texel_size = cc.shadow_texel_size;
+			c.bias_scale = cc.bias_scale;
+			c.range_begin = cc.z_top - cc.z_vec.dot(p_cam_transform.origin);
+			c.uv_scale = cc.uv_scale;
+			continue;
+		}
 
 		real_t x_min = 0.f, x_max = 0.f;
 		real_t y_min = 0.f, y_max = 0.f;
@@ -2292,6 +2329,9 @@ void RendererSceneCull::_light_instance_setup_directional_shadow(int p_shadow_in
 				}
 			}
 
+			if (kept) {
+				radius *= 1.0 + cache_margin; // room for the camera to move and turn while it is kept
+			}
 			radius *= texture_size / (texture_size - 2.0); //add a texel by each side
 
 			z_min_cam = z_vec.dot(center) - radius;
@@ -2318,6 +2358,15 @@ void RendererSceneCull::_light_instance_setup_directional_shadow(int p_shadow_in
 			x_min_cam = Math::snapped(x_vec.dot(center) - radius - soft_shadow_expand, unit);
 			y_max_cam = Math::snapped(y_vec.dot(center) + radius + soft_shadow_expand, unit);
 			y_min_cam = Math::snapped(y_vec.dot(center) - radius - soft_shadow_expand, unit);
+		}
+
+		// a kept split takes the casters of its whole box: the camera may move inside it before it is redrawn
+		if (kept) {
+			x_min = x_min_cam;
+			x_max = x_max_cam;
+			y_min = y_min_cam;
+			y_max = y_max_cam;
+			z_min = MIN(z_min, z_min_cam);
 		}
 
 		//now that we know all ranges, we can proceed to make the light frustum planes, for culling octree
@@ -2361,6 +2410,26 @@ void RendererSceneCull::_light_instance_setup_directional_shadow(int p_shadow_in
 			cull.shadows[p_shadow_index].cascades[i].bias_scale = (z_max - z_min_cam);
 			cull.shadows[p_shadow_index].cascades[i].range_begin = z_max - z_vec.dot(p_cam_transform.origin);
 			cull.shadows[p_shadow_index].cascades[i].uv_scale = uv_scale;
+
+			if (kept) {
+				DirectionalCascadeCache &cc = light->cascade_cache[i];
+				cc.valid = true; // (undone if it does not get drawn: _render_scene)
+				cc.projection = ortho_camera;
+				cc.transform = ortho_transform;
+				cc.zfar = z_max - z_min_cam;
+				cc.shadow_texel_size = radius * 2.0 / texture_size;
+				cc.bias_scale = z_max - z_min_cam;
+				cc.uv_scale = uv_scale;
+				cc.x_vec = x_vec;
+				cc.y_vec = y_vec;
+				cc.z_vec = z_vec;
+				cc.x_min = x_min_cam;
+				cc.x_max = x_max_cam;
+				cc.y_min = y_min_cam;
+				cc.y_max = y_max_cam;
+				cc.z_min = z_min_cam;
+				cc.z_top = z_max;
+			}
 		}
 	}
 }
@@ -3240,7 +3309,11 @@ void RendererSceneCull::_scene_cull(CullData &cull_data, InstanceCullResult &cul
 
 			for (uint32_t j = 0; j < cull_data.cull->shadow_count; j++) {
 				for (uint32_t k = 0; k < cull_data.cull->shadows[j].cascade_count; k++) {
-					if (!light_culler->cull_directional_light(cull_data.scenario->instance_aabbs[i], j, k)) { // pass the cascade index
+					if (cull_data.cull->shadows[j].cascades[k].reuse) {
+						continue; // kept from an earlier frame
+					}
+					// (a kept split takes every caster in its box, also those the camera does not see a shadow of now)
+					if (!cull_data.cull->shadows[j].cascades[k].kept && !light_culler->cull_directional_light(cull_data.scenario->instance_aabbs[i], j, k)) { // pass the cascade index
 						continue;
 					}
 					if (IN_FRUSTUM(cull_data.cull->shadows[j].cascades[k].frustum) && VIS_CHECK) {
@@ -3383,6 +3456,7 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 		}
 
 		RSG::light_storage->set_directional_shadow_count(lights_with_shadow.size());
+		directional_shadow_lights = lights_with_shadow.size();
 
 		for (int i = 0; i < lights_with_shadow.size(); i++) {
 			_light_instance_setup_directional_shadow(i, lights_with_shadow[i], p_camera_data->main_transform, p_camera_data->main_projection, p_camera_data->is_orthogonal, p_camera_data->vaspect);
@@ -3483,13 +3557,27 @@ void RendererSceneCull::_render_scene(const RendererSceneRender::CameraData *p_c
 				const Cull::Shadow::Cascade &c = cull.shadows[i].cascades[j];
 				//			print_line("shadow " + itos(i) + " cascade " + itos(j) + " elements: " + itos(c.cull_result.size()));
 				RSG::light_storage->light_instance_set_shadow_transform(cull.shadows[i].light_instance, c.projection, c.transform, c.zfar, c.split, j, c.shadow_texel_size, c.bias_scale, c.range_begin, c.uv_scale);
+				if (c.reuse) {
+					continue; // kept in the atlas from an earlier frame
+				}
 				if (max_shadows_used == MAX_UPDATE_SHADOWS) {
+					if (c.kept) {
+						static_cast<InstanceLightData *>(cull.shadows[i].instance->base_data)->cascade_cache[j].valid = false; // not drawn
+					}
 					continue;
 				}
 				render_shadow_data[max_shadows_used].light = cull.shadows[i].light_instance;
 				render_shadow_data[max_shadows_used].pass = j;
 				render_shadow_data[max_shadows_used].instances.merge_unordered(scene_cull_result.directional_shadows[i].cascade_geometry_instances[j]);
 				max_shadows_used++;
+			}
+		}
+		// this drawing of the directional atlas: the kept splits of these lights are in it, and those of
+		// any other drawing (another viewport) are not anymore
+		if (cull.shadow_count > 0) {
+			directional_shadow_generation++;
+			for (uint32_t i = 0; i < cull.shadow_count; i++) {
+				static_cast<InstanceLightData *>(cull.shadows[i].instance->base_data)->cascade_cache_generation = directional_shadow_generation;
 			}
 		}
 
