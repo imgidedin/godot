@@ -340,6 +340,7 @@ void ResourceLoader::_run_load_task(void *p_userdata) {
 	String thread_waiting_on_backup;
 
 	bool wait = false;
+	bool already_here = false;
 	{
 		MutexLock thread_load_lock(thread_load_mutex);
 		if (cleaning_tasks) {
@@ -347,7 +348,19 @@ void ResourceLoader::_run_load_task(void *p_userdata) {
 			return;
 		}
 
-		if (load_task.started_load && load_task.thread_index != thread_index) {
+		if (load_task.started_load && thread_index != -1 && load_task.thread_index == thread_index &&
+				load_task.task_id != 0 && load_task.task_id == WorkerThreadPool::get_singleton()->get_caller_task_id()) {
+			// This is the load's own pool task, arriving at the pool thread that already runs (or ran)
+			// the load: a waiter took it over in _load_complete_inner() before the pool task started,
+			// and now, yielding inside it (or later), this thread picked up that same pool task. Loading
+			// again would read the file a second time, nested inside the first one, sharing its
+			// half-built internal sub-resources through the cache. The load belongs to the other call,
+			// which finishes it. (Only the pool task itself: another task asking for this load here
+			// still gets the nested load, as before, since waiting would deadlock on our own stack and
+			// returning nothing would drop the dependency. -1 is shared by the main thread and every
+			// thread outside the pool, so it can't tell.)
+			already_here = true;
+		} else if (load_task.started_load && load_task.thread_index != thread_index) {
 			// If we were already waiting for task completion in a previous
 			// step make sure we don't clobber the old wait.
 			if (thread_waiting_on.has(thread_index)) {
@@ -359,7 +372,24 @@ void ResourceLoader::_run_load_task(void *p_userdata) {
 		} else {
 			load_task.started_load = true;
 			load_task.thread_index = thread_index;
+			// This thread may be inside a wait of an outer load, running this one while it yields
+			// (WorkerThreadPool::yield() runs other tasks). While this load runs, this thread is not
+			// blocked on that wait: leaving its entry would make the cycle detection below see a cycle
+			// through this thread, and a waiter of this load would steal it and run it a second time,
+			// concurrently. Two concurrent loads of one file share its internal sub-resources through
+			// the cache half-built (empty Images in a Texture2DArray: "All images must share the same
+			// format"). The entry comes back when this load ends (thread_waiting_on_backup, below).
+			// Only on pool threads: outside the pool, the -1 entry may belong to another thread.
+			if (thread_index != -1 && thread_waiting_on.has(thread_index)) {
+				thread_waiting_on_backup = thread_waiting_on[thread_index];
+				thread_waiting_on.erase(thread_index);
+			}
 		}
+	}
+
+	if (already_here) {
+		load_task.load_token->unreference(); // (Outside the lock: the last reference clears the token, which locks it.)
+		return;
 	}
 
 	ThreadLoadTask *curr_load_task_backup = curr_load_task;
