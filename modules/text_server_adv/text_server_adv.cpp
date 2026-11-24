@@ -3399,6 +3399,12 @@ void TextServerAdvanced::_font_set_texture_image(const RID &p_font_rid, const Ve
 		img = p_image->duplicate();
 		img->generate_mipmaps();
 	}
+	// The texture gets its own Image: glyphs added later are written straight into tex.image, and with
+	// the rendering server on its own thread the update is read there later; sharing the Image let it be
+	// read mid-write (empty, or a data size that is garbage: "Required size for texture update").
+	if (img == tex.image) {
+		img = tex.image->duplicate();
+	}
 	tex.texture = ImageTexture::create_from_image(img);
 	tex.dirty = false;
 }
@@ -3804,6 +3810,12 @@ RID TextServerAdvanced::_font_get_glyph_texture_rid(const RID &p_font_rid, const
 				img = tex.image->duplicate();
 				img->generate_mipmaps();
 			}
+			// The texture gets its own Image: glyphs added later are written straight into tex.image, and with
+			// the rendering server on its own thread the update is read there later; sharing the Image let it be
+			// read mid-write (empty, or a data size that is garbage: "Required size for texture update").
+			if (img == tex.image) {
+				img = tex.image->duplicate();
+			}
 			if (tex.texture.is_null()) {
 				tex.texture = ImageTexture::create_from_image(img);
 			} else {
@@ -3853,6 +3865,12 @@ Size2 TextServerAdvanced::_font_get_glyph_texture_size(const RID &p_font_rid, co
 			if (fd->mipmaps && !img->has_mipmaps()) {
 				img = tex.image->duplicate();
 				img->generate_mipmaps();
+			}
+			// The texture gets its own Image: glyphs added later are written straight into tex.image, and with
+			// the rendering server on its own thread the update is read there later; sharing the Image let it be
+			// read mid-write (empty, or a data size that is garbage: "Required size for texture update").
+			if (img == tex.image) {
+				img = tex.image->duplicate();
 			}
 			if (tex.texture.is_null()) {
 				tex.texture = ImageTexture::create_from_image(img);
@@ -4330,6 +4348,12 @@ void TextServerAdvanced::_font_draw_glyph(const RID &p_font_rid, const RID &p_ca
 					img = tex.image->duplicate();
 					img->generate_mipmaps();
 				}
+				// The texture gets its own Image: glyphs added later are written straight into tex.image, and with
+				// the rendering server on its own thread the update is read there later; sharing the Image let it be
+				// read mid-write (empty, or a data size that is garbage: "Required size for texture update").
+				if (img == tex.image) {
+					img = tex.image->duplicate();
+				}
 				if (tex.texture.is_null()) {
 					tex.texture = ImageTexture::create_from_image(img);
 				} else {
@@ -4468,6 +4492,12 @@ void TextServerAdvanced::_font_draw_glyph_outline(const RID &p_font_rid, const R
 				if (fd->mipmaps && !img->has_mipmaps()) {
 					img = tex.image->duplicate();
 					img->generate_mipmaps();
+				}
+				// The texture gets its own Image: glyphs added later are written straight into tex.image, and with
+				// the rendering server on its own thread the update is read there later; sharing the Image let it be
+				// read mid-write (empty, or a data size that is garbage: "Required size for texture update").
+				if (img == tex.image) {
+					img = tex.image->duplicate();
 				}
 				if (tex.texture.is_null()) {
 					tex.texture = ImageTexture::create_from_image(img);
