@@ -73,6 +73,8 @@ public:
 		bool use_taa = false;
 		bool use_debanding = false;
 		bool force_motion_vectors = false;
+		// The 3D scaling mode in effect (after falling back from what is not supported).
+		RSE::ViewportScaling3DMode effective_scaling_3d_mode = RSE::VIEWPORT_SCALING_3D_MODE_OFF;
 
 		RendererSceneRender::CameraData prev_camera_data;
 		uint64_t prev_camera_data_frame = 0;

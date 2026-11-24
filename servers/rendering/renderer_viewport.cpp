@@ -306,6 +306,7 @@ void RendererViewport::_configure_3d_render_buffers(Viewport *p_viewport) {
 
 			p_viewport->internal_size = Size2(render_width, render_height);
 			p_viewport->jitter_phase_count = jitter_phase_count;
+			p_viewport->effective_scaling_3d_mode = scaling_3d_mode;
 
 			// At resolution scales lower than 1.0, use negative texture mipmap bias
 			// to compensate for the loss of sharpness.
@@ -340,6 +341,21 @@ void RendererViewport::_draw_3d(Viewport *p_viewport) {
 		xr_interface = XRServer::get_singleton()->get_primary_interface();
 	}
 #endif // XR_DISABLED
+
+#ifdef RD_ENABLED
+	// Frame generation on the window this viewport goes to (rendering/frame_generation/mode): only
+	// with AMD FSR Upscaling, whose motion vectors (the camera's in every pixel) it uses. Not with
+	// DLSS: AMD's swapchain loads Vulkan by itself, so its presents bypass Streamline, which then
+	// never runs its per-present bookkeeping.
+	if (p_viewport->render_buffers.is_valid() && RD::get_singleton() != nullptr && p_viewport->viewport_to_screen != DisplayServerEnums::INVALID_WINDOW_ID) {
+		const RSE::ViewportScaling3DMode mode = p_viewport->effective_scaling_3d_mode;
+		const bool wanted = GLOBAL_GET_CACHED(int, "rendering/frame_generation/mode") == 1 && mode == RSE::VIEWPORT_SCALING_3D_MODE_FSR_UPSCALING;
+		const RID rt_texture = RSG::texture_storage->texture_get_rd_texture(RSG::texture_storage->render_target_get_texture(p_viewport->render_target));
+		const RD::DataFormat hudless_format = rt_texture.is_valid() ? RD::get_singleton()->texture_get_format(rt_texture).format : RD::DATA_FORMAT_R8G8B8A8_UNORM;
+		RD::get_singleton()->screen_set_frame_generation(p_viewport->viewport_to_screen, wanted, hudless_format);
+		p_viewport->render_buffers->set_frame_generation_screen(wanted ? p_viewport->viewport_to_screen : -1);
+	}
+#endif
 
 	if (p_viewport->use_occlusion_culling) {
 		if (p_viewport->occlusion_buffer_dirty) {

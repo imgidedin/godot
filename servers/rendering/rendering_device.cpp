@@ -5449,6 +5449,28 @@ int RenderingDevice::screen_get_pre_rotation_degrees(DisplayServerEnums::WindowI
 	return driver->swap_chain_get_pre_rotation_degrees(it->value);
 }
 
+void RenderingDevice::screen_set_frame_generation(DisplayServerEnums::WindowID p_screen, bool p_enabled, DataFormat p_hudless_format) {
+	_THREAD_SAFE_METHOD_
+
+	HashMap<DisplayServerEnums::WindowID, RDD::SwapChainID>::ConstIterator it = screen_swap_chains.find(p_screen);
+	ERR_FAIL_COND_MSG(it == screen_swap_chains.end(), "A swap chain was not created for the screen.");
+	driver->swap_chain_set_frame_generation(it->value, p_enabled, p_hudless_format);
+}
+
+bool RenderingDevice::screen_is_generating_frames(DisplayServerEnums::WindowID p_screen) const {
+	_THREAD_SAFE_METHOD_
+
+	HashMap<DisplayServerEnums::WindowID, RDD::SwapChainID>::ConstIterator it = screen_swap_chains.find(p_screen);
+	return it != screen_swap_chains.end() && driver->swap_chain_is_generating_frames(it->value);
+}
+
+RDD::SwapChainID RenderingDevice::screen_get_driver_swap_chain(DisplayServerEnums::WindowID p_screen) const {
+	_THREAD_SAFE_METHOD_
+
+	HashMap<DisplayServerEnums::WindowID, RDD::SwapChainID>::ConstIterator it = screen_swap_chains.find(p_screen);
+	return it != screen_swap_chains.end() ? it->value : RDD::SwapChainID();
+}
+
 RenderingDevice::FramebufferFormatID RenderingDevice::screen_get_framebuffer_format(DisplayServerEnums::WindowID p_screen) const {
 	_THREAD_SAFE_METHOD_
 
@@ -9783,6 +9805,7 @@ void RenderingDevice::_bind_methods() {
 	BIND_ENUM_CONSTANT(SUPPORTS_HDR_OUTPUT);
 	BIND_ENUM_CONSTANT(SUPPORTS_FSR_UPSCALING);
 	BIND_ENUM_CONSTANT(SUPPORTS_DLSS);
+	BIND_ENUM_CONSTANT(SUPPORTS_FSR_FRAME_GENERATION);
 
 	BIND_ENUM_CONSTANT(LIMIT_MAX_BOUND_UNIFORM_SETS);
 	BIND_ENUM_CONSTANT(LIMIT_MAX_FRAMEBUFFER_COLOR_ATTACHMENTS);

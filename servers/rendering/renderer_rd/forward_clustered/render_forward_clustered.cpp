@@ -2535,6 +2535,11 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	dlss_effect->process_pending_frees();
 #endif
 
+#ifdef FSR_UPSCALING_ENABLED
+	// AMD FSR Upscaling this frame: its R32 depth copy and its history reset (for the frame generation).
+	bool fsr_upscaled = false;
+	bool fsr_upscaling_reset = false;
+#endif
 	if (rb_data.is_valid() && (using_upscaling || using_taa)) {
 		if (scale_type == SCALE_FSR2) {
 			rb_data->ensure_fsr2(fsr2_effect);
@@ -2645,6 +2650,8 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 				}
 
 				RD::get_singleton()->draw_command_end_label();
+				fsr_upscaled = true;
+				fsr_upscaling_reset = reset;
 			}
 #endif
 		} else if (scale_type == SCALE_DLSS) {
@@ -2701,6 +2708,44 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		RENDER_TIMESTAMP("Tonemap");
 
 		_render_buffers_post_process_and_tonemap(p_render_data);
+
+#ifdef FSR_UPSCALING_ENABLED
+		// Frame generation from this frame (RendererViewport asks for it on the window): the image
+		// before the UI (the render target now, before the canvas is drawn on it) and the inputs.
+		const int32_t frame_generation_screen = rb->get_frame_generation_screen();
+		if (frame_generation_screen >= 0 && fsr_upscaled && rb->get_view_count() == 1 && RD::get_singleton()->screen_is_generating_frames(frame_generation_screen)) {
+			RD::get_singleton()->draw_command_begin_label("AMD FSR Frame Generation");
+			RID render_target = RendererRD::TextureStorage::get_singleton()->render_target_get_rd_texture(rb->get_render_target());
+			const RD::TextureFormat rt_format = RD::get_singleton()->texture_get_format(render_target);
+			if (!rb->has_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_FRAME_GENERATION_HUDLESS)) {
+				rb->create_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_FRAME_GENERATION_HUDLESS, rt_format.format, RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_CAN_COPY_TO_BIT, RD::TEXTURE_SAMPLES_1, rb->get_target_size(), 1, 1, true, false);
+			}
+			RID hudless = rb->get_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_FRAME_GENERATION_HUDLESS);
+			RD::get_singleton()->texture_copy(render_target, hudless, Vector3(), Vector3(), Vector3(rt_format.width, rt_format.height, 1), 0, 0, 0, 0);
+
+			// The depth as R32, as FSR Upscaling copied it this frame.
+			RID depth = rb_data->get_fsr_upscaling_depth(0);
+
+			real_t fov = p_render_data->scene_data->cam_projection.get_fov();
+			real_t aspect = p_render_data->scene_data->cam_projection.get_aspect();
+			RendererRD::FSRFrameGenerationEffect::Parameters params;
+			params.screen = frame_generation_screen;
+			params.internal_size = rb->get_internal_size();
+			params.target_size = rb->get_target_size();
+			params.depth = depth;
+			params.velocity = rb->get_velocity_buffer(false, 0);
+			params.hudless = hudless;
+			params.jitter = p_render_data->scene_data->taa_jitter * Vector2(rb->get_internal_size()) * 0.5f;
+			params.delta_time = float(time_step);
+			params.z_near = p_render_data->scene_data->z_near;
+			params.z_far = p_render_data->scene_data->z_far;
+			params.fovy = Math::deg_to_rad(p_render_data->scene_data->cam_projection.get_fovy(fov, 1.0 / aspect));
+			params.camera = p_render_data->scene_data->cam_transform;
+			params.reset = fsr_upscaling_reset;
+			fsr_frame_generation_effect->dispatch(params);
+			RD::get_singleton()->draw_command_end_label();
+		}
+#endif
 	}
 
 	if (rb_data.is_valid()) {
@@ -5508,6 +5553,9 @@ RenderForwardClustered::RenderForwardClustered() {
 #ifdef DLSS_ENABLED
 	dlss_effect = memnew(RendererRD::DLSSEffect);
 #endif
+#ifdef FSR_UPSCALING_ENABLED
+	fsr_frame_generation_effect = memnew(RendererRD::FSRFrameGenerationEffect);
+#endif
 #if defined(METAL_MFXTEMPORAL_ENABLED) || defined(FSR_UPSCALING_ENABLED)
 	motion_vectors_store = memnew(RendererRD::MotionVectorsStore);
 #endif
@@ -5549,6 +5597,13 @@ RenderForwardClustered::~RenderForwardClustered() {
 	if (dlss_effect) {
 		memdelete(dlss_effect);
 		dlss_effect = nullptr;
+	}
+#endif
+
+#ifdef FSR_UPSCALING_ENABLED
+	if (fsr_frame_generation_effect) {
+		memdelete(fsr_frame_generation_effect);
+		fsr_frame_generation_effect = nullptr;
 	}
 #endif
 

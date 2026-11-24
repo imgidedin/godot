@@ -31,8 +31,10 @@
 #pragma once
 
 #include "core/templates/hash_map.h"
+#include "core/templates/hash_set.h"
 #include "core/templates/paged_allocator.h"
 #include "core/templates/rb_map.h"
+#include "drivers/vulkan/fsr_frame_generation_vulkan.h"
 #include "drivers/vulkan/fsr_upscaling_vulkan.h"
 #include "drivers/vulkan/rendering_context_driver_vulkan.h"
 #include "drivers/vulkan/rendering_shader_container_vulkan.h"
@@ -468,6 +470,11 @@ private:
 		RenderPassID render_pass;
 		int pre_transform_rotation_degrees = 0;
 		uint32_t image_index = 0;
+#ifdef WINDOWS_ENABLED
+		bool frame_generation_wanted = false;
+		VkFormat frame_generation_hudless_format = VK_FORMAT_UNDEFINED;
+		FSRFrameGenerationVulkan::SwapChain frame_generation; // In use when its contexts exist.
+#endif
 #ifdef ANDROID_ENABLED
 		uint64_t refresh_duration = 0;
 #endif
@@ -860,10 +867,18 @@ public:
 #ifdef WINDOWS_ENABLED
 private:
 	FSRUpscalingVulkan fsr_upscaling;
+	FSRFrameGenerationVulkan fsr_frame_generation;
+	// The queues reserved for the frame generation (outside queue_families: Godot never submits there).
+	FSRFrameGenerationVulkan::Queue frame_generation_queues[3]; // Present, image acquire, async compute.
+	HashSet<SwapChain *> frame_generation_swap_chains; // The ones asked to generate frames (one at most).
 	bool dlss_device = false; // The device DLSS runs on (the main one, not a local rendering device).
 
 public:
 	FSRUpscalingVulkan &get_fsr_upscaling() { return fsr_upscaling; }
+	virtual void swap_chain_set_frame_generation(SwapChainID p_swap_chain, bool p_enabled, DataFormat p_hudless_format) override final;
+	virtual bool swap_chain_is_generating_frames(SwapChainID p_swap_chain) override final;
+	// The frame generation inputs of this frame, recorded into p_command_buffer (in a driver callback).
+	void swap_chain_dispatch_frame_generation(SwapChainID p_swap_chain, CommandBufferID p_command_buffer, const FSRFrameGenerationVulkan::FrameInputs &p_inputs);
 	DLSSVulkan &get_dlss() { return context_driver->get_dlss(); }
 #endif
 

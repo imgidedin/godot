@@ -35,6 +35,7 @@
 #include "servers/rendering/renderer_rd/cluster_builder_rd.h"
 #include "servers/rendering/renderer_rd/effects/fsr2.h"
 #include "servers/rendering/renderer_rd/effects/dlss.h"
+#include "servers/rendering/renderer_rd/effects/fsr_frame_generation.h"
 #include "servers/rendering/renderer_rd/effects/fsr_upscaling.h"
 #include "servers/rendering/renderer_rd/effects/motion_vectors_store.h"
 #include "servers/rendering/renderer_rd/effects/ss_effects.h"
@@ -57,6 +58,7 @@
 #define RB_TEX_VOXEL_GI SNAME("voxel_gi")
 #define RB_TEX_VOXEL_GI_MSAA SNAME("voxel_gi_msaa")
 #define RB_TEX_FSR_UPSCALING_DEPTH SNAME("fsr_upscaling_depth")
+#define RB_TEX_FRAME_GENERATION_HUDLESS SNAME("frame_generation_hudless")
 
 namespace RendererSceneRenderImplementation {
 
@@ -784,6 +786,9 @@ private:
 #endif
 #ifdef DLSS_ENABLED
 	RendererRD::DLSSEffect *dlss_effect = nullptr;
+#endif
+#ifdef FSR_UPSCALING_ENABLED
+	RendererRD::FSRFrameGenerationEffect *fsr_frame_generation_effect = nullptr;
 #endif
 	RendererRD::MotionVectorsStore *motion_vectors_store = nullptr;
 

@@ -1312,6 +1312,12 @@ public:
 	int screen_get_pre_rotation_degrees(DisplayServerEnums::WindowID p_screen = DisplayServerEnums::MAIN_WINDOW_ID) const;
 	FramebufferFormatID screen_get_framebuffer_format(DisplayServerEnums::WindowID p_screen = DisplayServerEnums::MAIN_WINDOW_ID) const;
 	ColorSpace screen_get_color_space(DisplayServerEnums::WindowID p_screen = DisplayServerEnums::MAIN_WINDOW_ID) const;
+	// Frame generation on a screen, asked for or not (it starts or stops with its next swap chain);
+	// p_hudless_format: the format of the image before the UI the renderer gives each frame.
+	void screen_set_frame_generation(DisplayServerEnums::WindowID p_screen, bool p_enabled, DataFormat p_hudless_format);
+	bool screen_is_generating_frames(DisplayServerEnums::WindowID p_screen) const;
+	// The driver's swap chain of a screen, for effects that hand it to the driver (in a driver callback).
+	RDD::SwapChainID screen_get_driver_swap_chain(DisplayServerEnums::WindowID p_screen) const;
 	bool screen_get_hdr_output_supported(DisplayServerEnums::WindowID p_screen = DisplayServerEnums::MAIN_WINDOW_ID) const;
 	Error screen_free(DisplayServerEnums::WindowID p_screen = DisplayServerEnums::MAIN_WINDOW_ID);
 

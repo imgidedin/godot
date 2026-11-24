@@ -29,6 +29,8 @@ Files extracted from upstream source:
 - `Kits/FidelityFX/api/include/ffx_api.h`, `ffx_api_types.h`, `ffx_api_loader.h`
   and `vk/ffx_api_vk.h`, as `api/include/...`
 - `Kits/FidelityFX/upscalers/include/ffx_upscale.h`, as `upscalers/include/ffx_upscale.h`
+- `Kits/FidelityFX/framegeneration/include/ffx_framegeneration.h`, `ffx_framegeneration_api_types.h`
+  and `vk/ffx_api_framegeneration_vk.h`, as `framegeneration/include/...`
 
 Line endings converted to LF.
 

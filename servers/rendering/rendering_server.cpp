@@ -3774,6 +3774,9 @@ void RenderingServer::init() {
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/scaling_3d/fsr_sharpness", PROPERTY_HINT_RANGE, "0,2,0.01"), 0.2f);
 	// The DLSS model for every quality mode (NVIDIA's default per mode, or one preset); a change applies on the next frame.
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/scaling_3d/dlss_preset", PROPERTY_HINT_ENUM, "Default,J,K,L,M"), 0);
+	// A generated frame between two rendered ones, on the windows whose viewport upscales with AMD FSR
+	// Upscaling (the generation uses its motion vectors); applies when the window's swap chain is remade.
+	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/frame_generation/mode", PROPERTY_HINT_ENUM, "Disabled,AMD FSR"), 0);
 
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/textures/default_filters/texture_mipmap_bias", PROPERTY_HINT_RANGE, "-2,2,0.001"), 0.0f);
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/textures/decals/filter", PROPERTY_HINT_ENUM, "Nearest (Fast),Linear (Fast),Nearest Mipmap (Fast),Linear Mipmap (Fast),Nearest Mipmap Anisotropic (Average),Linear Mipmap Anisotropic (Average)"), RSE::DECAL_FILTER_LINEAR_MIPMAPS);

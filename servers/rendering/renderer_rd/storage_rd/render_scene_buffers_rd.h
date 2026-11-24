@@ -95,6 +95,7 @@ private:
 	RSE::ViewportMSAA msaa_3d = RSE::VIEWPORT_MSAA_DISABLED;
 	RSE::ViewportScreenSpaceAA screen_space_aa = RSE::VIEWPORT_SCREEN_SPACE_AA_DISABLED;
 	bool use_taa = false;
+	int32_t frame_generation_screen = -1;
 	bool use_debanding = false;
 	RD::TextureSamples texture_samples = RD::TEXTURE_SAMPLES_1;
 
@@ -201,6 +202,8 @@ public:
 	virtual void configure(const RenderSceneBuffersConfiguration *p_config) override;
 	void configure_for_reflections(const Size2i p_reflection_size);
 	virtual void set_fsr_sharpness(float p_fsr_sharpness) override;
+	virtual void set_frame_generation_screen(int32_t p_screen) override { frame_generation_screen = p_screen; }
+	_FORCE_INLINE_ int32_t get_frame_generation_screen() const { return frame_generation_screen; }
 	virtual void set_texture_mipmap_bias(float p_texture_mipmap_bias) override;
 	virtual void set_anisotropic_filtering_level(RSE::ViewportAnisotropicFiltering p_anisotropic_filtering_level) override;
 	virtual void set_use_debanding(bool p_use_debanding) override;

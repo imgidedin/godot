@@ -1308,7 +1308,65 @@ Error RenderingDeviceDriverVulkan::_add_queue_create_info(LocalVector<VkDeviceQu
 
 	VkQueueFlags queue_flags_mask = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT;
 	const uint32_t max_queue_count_per_family = 1;
-	static const float queue_priorities[max_queue_count_per_family] = {};
+	static const float queue_priorities[4] = {};
+
+	// The frame generation presents from its own threads on queues of its own (present, image acquire
+	// and async compute), outside Godot's one per family. Present and acquire go in the graphics
+	// family when it has queues to spare (desktop NVIDIA), else in a compute one (AMD exposes a single
+	// graphics queue); whether that family presents to the window is checked when the swap chain is
+	// made. Async compute prefers a compute family. Reserved only when its DLL is there.
+	LocalVector<uint32_t> extra_queues;
+	extra_queues.resize_initialized(queue_family_count);
+#ifdef WINDOWS_ENABLED
+	if (FSRFrameGenerationVulkan::is_installed()) {
+		LocalVector<uint32_t> spare;
+		LocalVector<uint32_t> graphics_first; // Families in the order present and acquire prefer them.
+		LocalVector<uint32_t> compute_first; // The order async compute prefers.
+		for (uint32_t i = 0; i < queue_family_count; i++) {
+			const VkQueueFlags flags = queue_family_properties[i].queueFlags;
+			const bool used = (flags & queue_flags_mask) != 0;
+			spare.push_back(used ? queue_family_properties[i].queueCount - MIN(queue_family_properties[i].queueCount, max_queue_count_per_family) : 0);
+		}
+		for (int pass = 0; pass < 2; pass++) {
+			for (uint32_t i = 0; i < queue_family_count; i++) {
+				const VkQueueFlags flags = queue_family_properties[i].queueFlags;
+				const bool graphics = (flags & VK_QUEUE_GRAPHICS_BIT) != 0;
+				const bool compute = (flags & VK_QUEUE_COMPUTE_BIT) != 0;
+				if (graphics == (pass == 0) && (graphics || compute)) {
+					graphics_first.push_back(i);
+				}
+				if (compute && graphics == (pass == 1)) {
+					compute_first.push_back(i);
+				}
+			}
+		}
+		const LocalVector<uint32_t> *orders[3] = { &graphics_first, &graphics_first, &compute_first };
+		FSRFrameGenerationVulkan::Queue chosen[3];
+		bool found = true;
+		for (int role = 0; role < 3 && found; role++) {
+			found = false;
+			for (uint32_t family : *orders[role]) {
+				if (spare[family] > 0) {
+					spare[family]--;
+					extra_queues[family]++;
+					chosen[role] = { VK_NULL_HANDLE, family };
+					found = true;
+					break;
+				}
+			}
+		}
+		if (found) {
+			for (int role = 0; role < 3; role++) {
+				frame_generation_queues[role] = chosen[role];
+			}
+		} else {
+			for (uint32_t &count : extra_queues) {
+				count = 0;
+			}
+		}
+	}
+#endif
+
 	for (uint32_t i = 0; i < queue_family_count; i++) {
 		if ((queue_family_properties[i].queueFlags & queue_flags_mask) == 0) {
 			// We ignore creating queues in families that don't support any of the operations we require.
@@ -1320,10 +1378,12 @@ Error RenderingDeviceDriverVulkan::_add_queue_create_info(LocalVector<VkDeviceQu
 		create_info.queueFamilyIndex = i;
 		create_info.queueCount = MIN(queue_family_properties[i].queueCount, max_queue_count_per_family);
 		create_info.pQueuePriorities = queue_priorities;
-		r_queue_create_info.push_back(create_info);
 
-		// Prepare the vectors where the queues will be filled out.
+		// Prepare the vectors where the queues will be filled out (Godot's own, not the reserved ones).
 		queue_families[i].resize(create_info.queueCount);
+
+		create_info.queueCount += extra_queues[i];
+		r_queue_create_info.push_back(create_info);
 	}
 
 	return OK;
@@ -1505,6 +1565,20 @@ Error RenderingDeviceDriverVulkan::_initialize_device(const LocalVector<VkDevice
 			vkGetDeviceQueue(vk_device, i, j, &queue_families[i][j].queue);
 		}
 	}
+
+#ifdef WINDOWS_ENABLED
+	// The reserved ones come after Godot's in their families.
+	HashMap<uint32_t, uint32_t> next_index;
+	for (FSRFrameGenerationVulkan::Queue &queue : frame_generation_queues) {
+		if (queue.family != UINT32_MAX) {
+			uint32_t &index = next_index[queue.family];
+			if (index == 0) {
+				index = queue_families[queue.family].size();
+			}
+			vkGetDeviceQueue(vk_device, queue.family, index++, &queue.queue);
+		}
+	}
+#endif
 
 	const RenderingContextDriverVulkan::Functions &functions = context_driver->functions_get();
 	if (functions.GetDeviceProcAddr != nullptr) {
@@ -1866,6 +1940,7 @@ Error RenderingDeviceDriverVulkan::initialize(uint32_t p_device_index, uint32_t 
 
 #ifdef WINDOWS_ENABLED
 	fsr_upscaling.set_device(physical_device, vk_device);
+	fsr_frame_generation.set_device(&fsr_upscaling, physical_device, vk_device, frame_generation_queues[0], frame_generation_queues[1], frame_generation_queues[2]);
 	dlss_device = context_driver->get_dlss().register_device(physical_device);
 #endif
 
@@ -3230,6 +3305,7 @@ Error RenderingDeviceDriverVulkan::command_queue_execute_and_present(CommandQueu
 		ERR_FAIL_COND_V_MSG(err != VK_SUCCESS, FAILED, vformat("Couldn't flush Vulkan memory allocations (VkResult error %d).", err));
 	}
 
+	bool waits_per_swap_chain = false; // wait_semaphores holds one present semaphore per swap chain.
 	if (p_cmd_buffers.size() > 0) {
 		thread_local LocalVector<VkCommandBuffer> command_buffers;
 		thread_local LocalVector<VkSemaphore> present_semaphores;
@@ -3288,6 +3364,7 @@ Error RenderingDeviceDriverVulkan::command_queue_execute_and_present(CommandQueu
 		if (!present_semaphores.is_empty()) {
 			// If command buffers were executed, swap chains must wait on the present semaphore used by the command queue.
 			wait_semaphores = present_semaphores;
+			waits_per_swap_chain = true;
 		}
 	}
 
@@ -3316,18 +3393,110 @@ Error RenderingDeviceDriverVulkan::command_queue_execute_and_present(CommandQueu
 		present_info.pImageIndices = image_indices.ptr();
 		present_info.pResults = results.ptr();
 
-		device_queue.submit_mutex.lock();
-#if defined(SWAPPY_FRAME_PACING_ENABLED)
-		if (swappy_frame_pacer_enable) {
-			err = SwappyVk_queuePresent(device_queue.queue, &present_info);
-		} else {
-			err = device_functions.QueuePresentKHR(device_queue.queue, &present_info);
+#ifdef WINDOWS_ENABLED
+		uint32_t generating = UINT32_MAX;
+		for (uint32_t i = 0; i < p_swap_chains.size(); i++) {
+			if (((SwapChain *)(p_swap_chains[i].id))->frame_generation.swap_chain_context != nullptr) {
+				generating = i;
+				break;
+			}
 		}
+		if (generating != UINT32_MAX) {
+			// The swap chain that generates frames (one at most) presents first, through AMD's
+			// function, and the others after it; each waits for the rendering on its own semaphore.
+			// AMD's function submits to this queue from its own threads, taking submit_mutex itself,
+			// so it is called without it.
+			if (!waits_per_swap_chain) {
+				// No semaphore per swap chain (nothing was rendered in this call): one submission
+				// turns the waits into their present semaphores.
+				thread_local LocalVector<VkSemaphore> own_semaphores;
+				thread_local LocalVector<VkPipelineStageFlags> own_stages;
+				own_semaphores.clear();
+				own_stages.clear();
+				for (uint32_t i = 0; i < p_swap_chains.size(); i++) {
+					const SwapChain *swap_chain = (const SwapChain *)(p_swap_chains[i].id);
+					own_semaphores.push_back(swap_chain->present_semaphores[swap_chain->image_index]);
+				}
+				own_stages.resize(wait_semaphores.size());
+				for (VkPipelineStageFlags &stage : own_stages) {
+					stage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+				}
+				VkSubmitInfo submit_info = {};
+				submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+				submit_info.waitSemaphoreCount = wait_semaphores.size();
+				submit_info.pWaitSemaphores = wait_semaphores.ptr();
+				submit_info.pWaitDstStageMask = own_stages.ptr();
+				submit_info.signalSemaphoreCount = own_semaphores.size();
+				submit_info.pSignalSemaphores = own_semaphores.ptr();
+				device_queue.submit_mutex.lock();
+				err = vkQueueSubmit(device_queue.queue, 1, &submit_info, VK_NULL_HANDLE);
+				device_queue.submit_mutex.unlock();
+				ERR_FAIL_COND_V_MSG(err != VK_SUCCESS, FAILED, vformat("Couldn't submit to Vulkan queue (VkResult error %d).", err));
+				wait_semaphores = own_semaphores;
+			}
+
+			SwapChain *swap_chain = (SwapChain *)(p_swap_chains[generating].id);
+			fsr_frame_generation.before_present(swap_chain->frame_generation);
+			VkPresentInfoKHR generating_info = present_info;
+			generating_info.waitSemaphoreCount = 1;
+			generating_info.pWaitSemaphores = &wait_semaphores[generating];
+			generating_info.swapchainCount = 1;
+			generating_info.pSwapchains = &swapchains[generating];
+			generating_info.pImageIndices = &image_indices[generating];
+			generating_info.pResults = &results[generating];
+			err = swap_chain->frame_generation.queue_present(device_queue.queue, &generating_info);
+
+			thread_local LocalVector<VkSwapchainKHR> other_swapchains;
+			thread_local LocalVector<uint32_t> other_indices;
+			thread_local LocalVector<VkSemaphore> other_semaphores;
+			thread_local LocalVector<VkResult> other_results;
+			other_swapchains.clear();
+			other_indices.clear();
+			other_semaphores.clear();
+			for (uint32_t i = 0; i < swapchains.size(); i++) {
+				if (i != generating) {
+					other_swapchains.push_back(swapchains[i]);
+					other_indices.push_back(image_indices[i]);
+					other_semaphores.push_back(wait_semaphores[i]);
+				}
+			}
+			if (!other_swapchains.is_empty()) {
+				other_results.resize(other_swapchains.size());
+				VkPresentInfoKHR other_info = present_info;
+				other_info.waitSemaphoreCount = other_semaphores.size();
+				other_info.pWaitSemaphores = other_semaphores.ptr();
+				other_info.swapchainCount = other_swapchains.size();
+				other_info.pSwapchains = other_swapchains.ptr();
+				other_info.pImageIndices = other_indices.ptr();
+				other_info.pResults = other_results.ptr();
+				device_queue.submit_mutex.lock();
+				const VkResult other_err = device_functions.QueuePresentKHR(device_queue.queue, &other_info);
+				device_queue.submit_mutex.unlock();
+				if (err == VK_SUCCESS) {
+					err = other_err;
+				}
+				for (uint32_t i = 0, k = 0; i < swapchains.size(); i++) {
+					if (i != generating) {
+						results[i] = other_results[k++];
+					}
+				}
+			}
+		} else
+#endif
+		{
+			device_queue.submit_mutex.lock();
+#if defined(SWAPPY_FRAME_PACING_ENABLED)
+			if (swappy_frame_pacer_enable) {
+				err = SwappyVk_queuePresent(device_queue.queue, &present_info);
+			} else {
+				err = device_functions.QueuePresentKHR(device_queue.queue, &present_info);
+			}
 #else
-		err = device_functions.QueuePresentKHR(device_queue.queue, &present_info);
+			err = device_functions.QueuePresentKHR(device_queue.queue, &present_info);
 #endif
 
-		device_queue.submit_mutex.unlock();
+			device_queue.submit_mutex.unlock();
+		}
 
 		// Set the index to an invalid value. If any of the swap chains returned out of date, indicate it should be resized the next time it's acquired.
 		bool any_result_is_out_of_date = false;
@@ -3632,6 +3801,13 @@ void RenderingDeviceDriverVulkan::_swap_chain_release(SwapChain *swap_chain) {
 	swap_chain->image_views.clear();
 	swap_chain->framebuffers.clear();
 
+#ifdef WINDOWS_ENABLED
+	if (swap_chain->frame_generation.swap_chain_context != nullptr) {
+		// AMD's swapchain: it goes with its contexts (after its pending presents).
+		fsr_frame_generation.destroy(swap_chain->frame_generation);
+		swap_chain->vk_swapchain = VK_NULL_HANDLE;
+	}
+#endif
 	if (swap_chain->vk_swapchain != VK_NULL_HANDLE) {
 #if defined(SWAPPY_FRAME_PACING_ENABLED)
 		if (swappy_frame_pacer_enable) {
@@ -3847,8 +4023,25 @@ Error RenderingDeviceDriverVulkan::swap_chain_resize(CommandQueueID p_cmd_queue,
 	swap_create_info.compositeAlpha = composite_alpha;
 	swap_create_info.presentMode = present_mode;
 	swap_create_info.clipped = true;
-	err = device_functions.CreateSwapchainKHR(vk_device, &swap_create_info, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_SWAPCHAIN_KHR), &swap_chain->vk_swapchain);
-	ERR_FAIL_COND_V_MSG(err != VK_SUCCESS, ERR_CANT_CREATE, vformat("Couldn't create Vulkan swapchain (VkResult error %d).", err));
+	bool generating_frames = false;
+#ifdef WINDOWS_ENABLED
+	if (swap_chain->frame_generation_wanted && fsr_frame_generation.is_available() && context_driver->queue_family_supports_present(physical_device, frame_generation_queues[0].family, swap_chain->surface)) {
+		// AMD's swapchain in place of this one (the frame generation presents through it).
+		Queue &game_queue = queue_families[command_queue->queue_family][command_queue->queue_index];
+		generating_frames = fsr_frame_generation.create(swap_chain->frame_generation, swap_create_info, game_queue.queue, command_queue->queue_family, &game_queue.submit_mutex, swap_chain->frame_generation_hudless_format) == OK;
+		swap_chain->vk_swapchain = generating_frames ? swap_chain->frame_generation.vk_swapchain : VK_NULL_HANDLE;
+	}
+#endif
+	if (!generating_frames) {
+		err = device_functions.CreateSwapchainKHR(vk_device, &swap_create_info, VKC::get_allocation_callbacks(VK_OBJECT_TYPE_SWAPCHAIN_KHR), &swap_chain->vk_swapchain);
+		ERR_FAIL_COND_V_MSG(err != VK_SUCCESS, ERR_CANT_CREATE, vformat("Couldn't create Vulkan swapchain (VkResult error %d).", err));
+	}
+	PFN_vkGetSwapchainImagesKHR get_swapchain_images = device_functions.GetSwapchainImagesKHR;
+#ifdef WINDOWS_ENABLED
+	if (generating_frames) {
+		get_swapchain_images = swap_chain->frame_generation.get_swapchain_images;
+	}
+#endif
 
 #if defined(SWAPPY_FRAME_PACING_ENABLED)
 	if (swappy_frame_pacer_enable) {
@@ -3881,11 +4074,11 @@ Error RenderingDeviceDriverVulkan::swap_chain_resize(CommandQueueID p_cmd_queue,
 #endif
 
 	uint32_t image_count = 0;
-	err = device_functions.GetSwapchainImagesKHR(vk_device, swap_chain->vk_swapchain, &image_count, nullptr);
+	err = get_swapchain_images(vk_device, swap_chain->vk_swapchain, &image_count, nullptr);
 	ERR_FAIL_COND_V_MSG(err != VK_SUCCESS, ERR_CANT_CREATE, vformat("Couldn't get Vulkan swapchain images (VkResult error %d).", err));
 
 	swap_chain->images.resize(image_count);
-	err = device_functions.GetSwapchainImagesKHR(vk_device, swap_chain->vk_swapchain, &image_count, swap_chain->images.ptr());
+	err = get_swapchain_images(vk_device, swap_chain->vk_swapchain, &image_count, swap_chain->images.ptr());
 	ERR_FAIL_COND_V_MSG(err != VK_SUCCESS, ERR_CANT_CREATE, vformat("Couldn't get Vulkan swapchain images (VkResult error %d).", err));
 
 	VkImageViewCreateInfo view_create_info = {};
@@ -4028,7 +4221,13 @@ RDD::FramebufferID RenderingDeviceDriverVulkan::swap_chain_acquire_framebuffer(C
 	swap_chain->command_queues_acquired.push_back(command_queue);
 	swap_chain->command_queues_acquired_semaphores.push_back(semaphore_index);
 
-	err = device_functions.AcquireNextImageKHR(vk_device, swap_chain->vk_swapchain, UINT64_MAX, semaphore, VK_NULL_HANDLE, &swap_chain->image_index);
+	PFN_vkAcquireNextImageKHR acquire_next_image = device_functions.AcquireNextImageKHR;
+#ifdef WINDOWS_ENABLED
+	if (swap_chain->frame_generation.swap_chain_context != nullptr) {
+		acquire_next_image = swap_chain->frame_generation.acquire_next_image;
+	}
+#endif
+	err = acquire_next_image(vk_device, swap_chain->vk_swapchain, UINT64_MAX, semaphore, VK_NULL_HANDLE, &swap_chain->image_index);
 	if (err == VK_ERROR_OUT_OF_DATE_KHR) {
 		// Out of date leaves the semaphore in a signaled state that will never finish, so it's necessary to recreate it.
 		bool semaphore_recreated = _recreate_image_semaphore(command_queue, semaphore_index, true);
@@ -4173,6 +4372,9 @@ void RenderingDeviceDriverVulkan::swap_chain_free(SwapChainID p_swap_chain) {
 
 	SwapChain *swap_chain = (SwapChain *)(p_swap_chain.id);
 	_swap_chain_release(swap_chain);
+#ifdef WINDOWS_ENABLED
+	frame_generation_swap_chains.erase(swap_chain);
+#endif
 
 	memdelete(swap_chain);
 }
@@ -7420,6 +7622,12 @@ bool RenderingDeviceDriverVulkan::has_feature(Features p_feature) {
 #else
 			return false;
 #endif
+		case SUPPORTS_FSR_FRAME_GENERATION:
+#if defined(WINDOWS_ENABLED)
+			return fsr_frame_generation.is_available();
+#else
+			return false;
+#endif
 		case SUPPORTS_DLSS:
 #if defined(WINDOWS_ENABLED)
 			return dlss_device && context_driver->get_dlss().is_available();
@@ -7495,6 +7703,43 @@ RenderingDeviceDriverVulkan::RenderingDeviceDriverVulkan(RenderingContextDriverV
 	context_driver = p_context_driver;
 	max_descriptor_sets_per_pool = GLOBAL_GET("rendering/rendering_device/vulkan/max_descriptors_per_pool");
 }
+
+#ifdef WINDOWS_ENABLED
+void RenderingDeviceDriverVulkan::swap_chain_set_frame_generation(SwapChainID p_swap_chain, bool p_enabled, DataFormat p_hudless_format) {
+	SwapChain *swap_chain = (SwapChain *)(p_swap_chain.id);
+	const VkFormat hudless_format = p_enabled ? RD_TO_VK_FORMAT[p_hudless_format] : VK_FORMAT_UNDEFINED;
+	if (swap_chain->frame_generation_wanted == p_enabled && swap_chain->frame_generation_hudless_format == hudless_format) {
+		return;
+	}
+	if (p_enabled && !swap_chain->frame_generation_wanted) {
+		// One window at a time (AMD's DLL generates frames for one swapchain).
+		for (const SwapChain *other : frame_generation_swap_chains) {
+			if (other != swap_chain) {
+				WARN_PRINT_ONCE("AMD FSR Frame Generation: already on in another window.");
+				return;
+			}
+		}
+		frame_generation_swap_chains.insert(swap_chain);
+	} else if (!p_enabled) {
+		frame_generation_swap_chains.erase(swap_chain);
+	}
+	swap_chain->frame_generation_wanted = p_enabled;
+	swap_chain->frame_generation_hudless_format = hudless_format;
+	// It starts or stops with a new swap chain.
+	context_driver->surface_set_needs_resize(swap_chain->surface, true);
+}
+
+bool RenderingDeviceDriverVulkan::swap_chain_is_generating_frames(SwapChainID p_swap_chain) {
+	return ((SwapChain *)(p_swap_chain.id))->frame_generation.swap_chain_context != nullptr;
+}
+
+void RenderingDeviceDriverVulkan::swap_chain_dispatch_frame_generation(SwapChainID p_swap_chain, CommandBufferID p_command_buffer, const FSRFrameGenerationVulkan::FrameInputs &p_inputs) {
+	SwapChain *swap_chain = (SwapChain *)(p_swap_chain.id);
+	if (swap_chain->frame_generation.swap_chain_context != nullptr) {
+		fsr_frame_generation.dispatch(swap_chain->frame_generation, ((const CommandBufferInfo *)p_command_buffer.id)->vk_command_buffer, p_inputs);
+	}
+}
+#endif
 
 RenderingDeviceDriverVulkan::~RenderingDeviceDriverVulkan() {
 #ifdef WINDOWS_ENABLED
