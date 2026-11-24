@@ -1219,6 +1219,102 @@ Ref<Image> DisplayServerWindows::clipboard_get_image() const {
 	return image;
 }
 
+// Can be called from any thread. Encoding a large image takes a while, so the display server's lock
+// is held only to look up the window that owns the clipboard: the main thread keeps running.
+void DisplayServerWindows::clipboard_set_image(const Ref<Image> &p_image) {
+	ERR_FAIL_COND_MSG(p_image.is_null() || p_image->is_empty(), "Can't copy an empty image to the clipboard.");
+	HWND owner = nullptr;
+	{
+		_THREAD_SAFE_METHOD_
+		if (!windows.has(DisplayServerEnums::MAIN_WINDOW_ID)) {
+			return;
+		}
+		owner = windows[DisplayServerEnums::MAIN_WINDOW_ID].hWnd;
+	}
+
+	Ref<Image> img = p_image->duplicate();
+	if (img->is_compressed()) {
+		ERR_FAIL_COND_MSG(img->decompress() != OK, "Can't decompress the image to copy it to the clipboard.");
+	}
+	img->convert(Image::FORMAT_RGBA8);
+	const int w = img->get_width();
+	const int h = img->get_height();
+
+	// Two formats, the same ones clipboard_get_image() reads: "PNG" (keeps alpha; browsers, chat
+	// apps and image editors take it) and CF_DIB (every Windows program takes it).
+	const Vector<uint8_t> png = img->save_png_to_buffer();
+	HGLOBAL png_mem = GlobalAlloc(GMEM_MOVEABLE, png.size());
+	ERR_FAIL_NULL_MSG(png_mem, "Unable to allocate memory for clipboard contents.");
+	uint8_t *png_ptr = (uint8_t *)GlobalLock(png_mem);
+	if (png_ptr == nullptr) {
+		GlobalFree(png_mem);
+		ERR_FAIL_MSG("Unable to lock memory for clipboard contents.");
+	}
+	memcpy(png_ptr, png.ptr(), png.size());
+	GlobalUnlock(png_mem);
+
+	// CF_DIB: 32-bit BI_RGB, rows bottom-up, BGRA.
+	const size_t row = size_t(w) * 4;
+	HGLOBAL dib_mem = GlobalAlloc(GMEM_MOVEABLE, sizeof(BITMAPINFOHEADER) + row * h);
+	if (dib_mem == nullptr) {
+		GlobalFree(png_mem);
+		ERR_FAIL_MSG("Unable to allocate memory for clipboard contents.");
+	}
+	uint8_t *dib = (uint8_t *)GlobalLock(dib_mem);
+	if (dib == nullptr) {
+		GlobalFree(png_mem);
+		GlobalFree(dib_mem);
+		ERR_FAIL_MSG("Unable to lock memory for clipboard contents.");
+	}
+	BITMAPINFOHEADER *header = (BITMAPINFOHEADER *)dib;
+	*header = {};
+	header->biSize = sizeof(BITMAPINFOHEADER);
+	header->biWidth = w;
+	header->biHeight = h;
+	header->biPlanes = 1;
+	header->biBitCount = 32;
+	header->biCompression = BI_RGB;
+	header->biSizeImage = row * h;
+	const uint8_t *src = img->ptr();
+	uint8_t *dst = dib + sizeof(BITMAPINFOHEADER);
+	for (int y = 0; y < h; y++) {
+		const uint8_t *s = src + size_t(h - 1 - y) * row;
+		uint8_t *d = dst + size_t(y) * row;
+		for (int x = 0; x < w; x++) {
+			d[x * 4 + 0] = s[x * 4 + 2];
+			d[x * 4 + 1] = s[x * 4 + 1];
+			d[x * 4 + 2] = s[x * 4 + 0];
+			d[x * 4 + 3] = s[x * 4 + 3];
+		}
+	}
+	GlobalUnlock(dib_mem);
+
+	// Another program (clipboard history, a clipboard manager) may hold the clipboard for a moment:
+	// try a few times before giving up.
+	bool opened = false;
+	for (int attempt = 0; attempt < 5 && !opened; attempt++) {
+		opened = OpenClipboard(owner);    // (fails, and is reported, if the window closed meanwhile)
+		if (!opened) {
+			OS::get_singleton()->delay_usec(10000);
+		}
+	}
+	if (!opened) {
+		GlobalFree(png_mem);
+		GlobalFree(dib_mem);
+		ERR_FAIL_MSG("Unable to open clipboard.");
+	}
+	EmptyClipboard();
+	// After a successful SetClipboardData the system owns the memory; on failure it's still ours.
+	if (SetClipboardData(CF_DIB, dib_mem) == nullptr) {
+		GlobalFree(dib_mem);
+	}
+	UINT png_format = RegisterClipboardFormatA("PNG");
+	if (png_format == 0 || SetClipboardData(png_format, png_mem) == nullptr) {
+		GlobalFree(png_mem);
+	}
+	CloseClipboard();
+}
+
 bool DisplayServerWindows::clipboard_has() const {
 	return (IsClipboardFormatAvailable(CF_TEXT) ||
 			IsClipboardFormatAvailable(CF_UNICODETEXT) ||
