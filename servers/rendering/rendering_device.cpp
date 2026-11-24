@@ -8370,6 +8370,11 @@ Error RenderingDevice::initialize(RenderingContextDriver *p_context, DisplayServ
 
 	frame = 0;
 	max_timestamp_query_elements = GLOBAL_GET("debug/settings/profiler/max_timestamp_query_elements");
+#ifdef GODOT_USE_PERFETTO
+	// The flight recorder (Jornada) keeps the GPU markers on every frame: with many shadowed lights or
+	// viewports, the 256 of the default ran out (an error per extra marker, per frame).
+	max_timestamp_query_elements = MAX(max_timestamp_query_elements, 1024u);
+#endif
 
 	device = context->device_get(device_index);
 	err = driver->initialize(device_index, frame_count);

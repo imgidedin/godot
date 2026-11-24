@@ -195,15 +195,73 @@ void godot_cleanup_profiler() {
 }
 
 #elif defined(GODOT_USE_PERFETTO)
+#include "core/io/file_access.h"
+#include "core/os/mutex.h"
+
 PERFETTO_TRACK_EVENT_STATIC_STORAGE();
+
+// The flight recorder: an in-process session of every category, in a ring buffer that keeps the last
+// seconds (how many depends on how busy they were: every script function run is an event).
+static constexpr uint32_t RECORDER_BUFFER_KB = 512 * 1024;
+// The memory each thread writes its events to before the service moves them to the buffer: with every
+// script call an event, on several threads at once, the default 256 KB filled up and events were
+// dropped. 32 MB is the most the SDK takes.
+static constexpr uint32_t RECORDER_SHMEM_KB = 32 * 1024;
+// The interned names and the track descriptors are written once per sequence, and the timestamps are
+// deltas: in a ring buffer the first packets get overwritten, and without them the rest of a thread
+// can't be read. Every this often the state is cleared and written again.
+static constexpr uint32_t RECORDER_CLEAR_STATE_MS = 100; // (with 500, a busy thread wrapped the buffer between clears: 2 million events unreadable)
+static std::unique_ptr<perfetto::TracingSession> recorder;
+static Mutex recorder_mutex;
+
+static std::unique_ptr<perfetto::TracingSession> _recorder_start() {
+	perfetto::TraceConfig config;
+	perfetto::protos::gen::TraceConfig_BufferConfig *buffer = config.add_buffers();
+	buffer->set_size_kb(RECORDER_BUFFER_KB);
+	buffer->set_fill_policy(perfetto::protos::gen::TraceConfig_BufferConfig::RING_BUFFER);
+	config.mutable_incremental_state_config()->set_clear_period_ms(RECORDER_CLEAR_STATE_MS);
+	perfetto::DataSourceConfig *source = config.add_data_sources()->mutable_config();
+	source->set_name("track_event");
+	perfetto::protos::gen::TrackEventConfig track_event;
+	track_event.add_enabled_categories("*");
+	source->set_track_event_config_raw(track_event.SerializeAsString());
+	std::unique_ptr<perfetto::TracingSession> session = perfetto::Tracing::NewTrace(perfetto::kInProcessBackend);
+	session->Setup(config);
+	session->StartBlocking();
+	return session;
+}
 
 void godot_init_profiler() {
 	perfetto::TracingInitArgs args;
 
-	args.backends |= perfetto::kSystemBackend;
+#ifdef WINDOWS_ENABLED
+	args.backends |= perfetto::kInProcessBackend; // (no system tracing service on Windows)
+#else
+	args.backends |= perfetto::kSystemBackend | perfetto::kInProcessBackend;
+#endif
+	args.shmem_size_hint_kb = RECORDER_SHMEM_KB;
 
 	perfetto::Tracing::Initialize(args);
 	perfetto::TrackEvent::Register();
+	recorder = _recorder_start();
+}
+
+Error godot_profiler_save(const String &p_path) {
+	MutexLock lock(recorder_mutex);
+	ERR_FAIL_COND_V(!recorder, ERR_UNAVAILABLE);
+	// The next session starts before this one stops (the SDK runs several at once), so nothing goes
+	// unrecorded meanwhile; then this one is stopped and read. Reading the running session (which
+	// Perfetto allows) doesn't take a snapshot: it keeps returning what keeps coming in (one save came
+	// out with 10 GB).
+	std::unique_ptr<perfetto::TracingSession> previous = std::move(recorder);
+	recorder = _recorder_start();
+	previous->StopBlocking();
+	std::vector<char> data = previous->ReadTraceBlocking();
+	previous.reset();
+	Ref<FileAccess> file = FileAccess::open(p_path, FileAccess::WRITE);
+	ERR_FAIL_COND_V_MSG(file.is_null(), ERR_CANT_CREATE, "Can't write the trace to " + p_path);
+	file->store_buffer((const uint8_t *)data.data(), data.size());
+	return OK;
 }
 
 void godot_cleanup_profiler() {

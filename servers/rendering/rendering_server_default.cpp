@@ -77,6 +77,9 @@ void RenderingServerDefault::_draw(bool p_swap_buffers, double frame_step) {
 	GodotProfileZoneGroupedFirst(_profile_zone, "rasterizer->begin_frame");
 	RSG::rasterizer->begin_frame(frame_step);
 
+#ifdef GODOT_USE_PERFETTO
+	RSG::utilities->capturing_timestamps = true; // (the flight recorder records the GPU steps, below; set_frame_profiling_enabled(false) no longer turns them off here)
+#endif
 	TIMESTAMP_BEGIN()
 
 	uint64_t time_usec = OS::get_singleton()->get_ticks_usec();
@@ -135,6 +138,36 @@ void RenderingServerDefault::_draw(bool p_swap_buffers, double frame_step) {
 
 	if (RSG::utilities->get_captured_timestamps_count()) {
 		GodotProfileZoneGrouped(_profile_zone, "frame_profile");
+#ifdef GODOT_USE_PERFETTO
+		// The flight recorder (Jornada): every GPU step of that frame on a "placa" track, from one marker
+		// (RENDER_TIMESTAMP) to the next, named after the first. The durations are the GPU's; the GPU
+		// clock has no common base with the CPU's here (no calibrated timestamps), so the frame's first
+		// marker is placed when the CPU recorded it, and the GPU actually ran it later. With frames in
+		// flight a frame's GPU time can run past the next frame's start: each of PLACA_TRACKS frames in a
+		// row gets its own track, so their slices never overlap on one.
+		{
+			static constexpr uint64_t PLACA_TRACKS = 4;
+			const uint64_t trace_now = perfetto::TrackEvent::GetTraceTimeNs();
+			const uint64_t ticks_now = OS::get_singleton()->get_ticks_usec();
+			const uint32_t count = RSG::utilities->get_captured_timestamps_count();
+			const uint64_t cpu0 = RSG::utilities->get_captured_timestamp_cpu_time(0);
+			const uint64_t gpu0 = RSG::utilities->get_captured_timestamp_gpu_time(0);
+			const uint64_t start_ns = trace_now - MIN(trace_now, (ticks_now - MIN(ticks_now, cpu0)) * 1000);
+			const perfetto::NamedTrack track("placa", RSG::utilities->get_captured_timestamps_frame() % PLACA_TRACKS);
+			uint64_t last_end = 0;
+			for (uint32_t i = 0; i + 1 < count; i++) {
+				const uint64_t from = MAX(RSG::utilities->get_captured_timestamp_gpu_time(i), last_end);
+				const uint64_t to = RSG::utilities->get_captured_timestamp_gpu_time(i + 1);
+				if (to <= from || from < gpu0) {
+					continue;
+				}
+				const CharString step = RSG::utilities->get_captured_timestamp_name(i).utf8();
+				TRACE_EVENT_BEGIN("placa", perfetto::DynamicString(step.get_data()), track, start_ns + (from - gpu0));
+				TRACE_EVENT_END("placa", track, start_ns + (to - gpu0));
+				last_end = to;
+			}
+		}
+#endif
 		Vector<RenderingServerTypes::FrameProfileArea> new_profile;
 		if (RSG::utilities->capturing_timestamps) {
 			new_profile.resize(RSG::utilities->get_captured_timestamps_count());

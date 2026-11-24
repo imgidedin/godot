@@ -107,7 +107,11 @@ PERFETTO_DEFINE_CATEGORIES(
 		perfetto::Category("godot")
 				.SetDescription("Godot Engine Events"),
 		perfetto::Category("godot_scripting")
-				.SetDescription("Godot Scripting Events"), );
+				.SetDescription("Godot Scripting Events"),
+		perfetto::Category("jogo")
+				.SetDescription("The game's own spans and marks (Jornada: the CaixaPreta class)"),
+		perfetto::Category("placa")
+				.SetDescription("GPU time of each rendering step (Jornada: RenderingServerDefault::_draw)"), );
 
 // See PERFETTO_INTERNAL_SCOPED_EVENT_FINALIZER
 struct PerfettoGroupedEventEnder {
@@ -119,6 +123,11 @@ struct PerfettoGroupedEventEnder {
 		_end_now();
 	}
 };
+
+// The flight recorder (Jornada): with perfetto, the whole run is recorded in-process into a ring buffer
+// (godot_init_profiler); this writes what the buffer holds now to `p_path` (a .pftrace, opened in
+// ui.perfetto.dev) and empties it. Thread-safe.
+Error godot_profiler_save(const String &p_path);
 
 #define GodotProfileFrameMark \
 	perfetto::CounterTrack __frame_time_track = perfetto::CounterTrack("Frame time", "ms").set_unit_multiplier(1000); \
@@ -132,45 +141,22 @@ struct PerfettoGroupedEventEnder {
 	__godot_perfetto_zone_##m_group_name._end_now(); \
 	TRACE_EVENT_BEGIN("godot", m_zone_name);
 
-static HashSet<StringName> __tracing_system_call;
-
-/**
- * Script tracing may cross function boundaries (tracing started in the caller script), so the logic below only triggers
- * a TRACE_EVENT_BEGIN for `GodotProfileZoneScript` if tracing hasn't already been initiated by
- * `GodotProfileZoneScriptSystemCall` in the caller.
- */
+// One event per script function run (Jornada). Godot's own also gave one per call a script made (native
+// methods included), and skipped the callee's when the caller had one; in the flight recorder those calls
+// were most of the events, and a ring buffer of 256 MB held 1.6 s. A native method's time now shows inside
+// the script function calling it.
 struct PerfettoScriptTracer {
-	StringName name;
-	bool is_system_call;
-	bool tracing;
-
-	PerfettoScriptTracer(const StringName &p_file, const StringName &p_function, const StringName &p_name, int p_line, bool p_system_call) : name(p_name), is_system_call(p_system_call) {
-		if (is_system_call || !__tracing_system_call.erase(name)) {
-			TRACE_EVENT_BEGIN("godot_scripting", perfetto::DynamicString(p_name.operator String().utf8().get_data()), "source file", p_file.operator String().utf8().get_data(), "line number", p_line);
-			tracing = true;
-		}
-
-		if (is_system_call) {
-			__tracing_system_call.insert(name);
-		}
-	}
-
-	_FORCE_INLINE_ void _end_now() {
-		if (tracing) {
-			TRACE_EVENT_END("godot_scripting");
-		}
+	PerfettoScriptTracer(const StringName &p_file, const StringName &p_name, int p_line) {
+		TRACE_EVENT_BEGIN("godot_scripting", perfetto::DynamicString(p_name.operator String().utf8().get_data()), "source file", p_file.operator String().utf8().get_data(), "line number", p_line);
 	}
 
 	_FORCE_INLINE_ ~PerfettoScriptTracer() {
-		_end_now();
-		if (is_system_call) {
-			__tracing_system_call.erase(name);
-		}
+		TRACE_EVENT_END("godot_scripting");
 	}
 };
 
-#define GodotProfileZoneScript(m_ptr, m_file, m_function, m_name, m_line) PerfettoScriptTracer __godot_perfetto_script_tracer(m_file, m_function, m_name, m_line, false);
-#define GodotProfileZoneScriptSystemCall(m_ptr, m_file, m_function, m_name, m_line) PerfettoScriptTracer __godot_perfetto_script_system_call_tracer(m_file, m_function, m_name, m_line, true);
+#define GodotProfileZoneScript(m_ptr, m_file, m_function, m_name, m_line) PerfettoScriptTracer __godot_perfetto_script_tracer(m_file, m_name, m_line);
+#define GodotProfileZoneScriptSystemCall(m_ptr, m_file, m_function, m_name, m_line)
 
 #define GodotProfileAlloc(m_ptr, m_size)
 #define GodotProfileFree(m_ptr)
