@@ -335,6 +335,10 @@ Ref<Resource> ResourceLoader::_load(const String &p_path, const String &p_origin
 // This implementation must allow re-entrancy for a task that started awaiting in a deeper stack frame.
 // The load task token must be manually re-referenced before this is called, which includes threaded runs.
 void ResourceLoader::_run_load_task(void *p_userdata) {
+	// On a pool thread, the waits of this load (for a dependency, for a nested load's task) only take
+	// other loads meanwhile: with any task, it stayed stuck until an unrelated long one ended (~4 s
+	// behind a script task, about once in ten starts of the game's map).
+	WorkerThreadPool::OnlyNativeScope only_loads(&ResourceLoader::_run_load_task);
 	ThreadLoadTask &load_task = *(ThreadLoadTask *)p_userdata;
 	int thread_index = WorkerThreadPool::get_singleton()->get_thread_index();
 	String thread_waiting_on_backup;

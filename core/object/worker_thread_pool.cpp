@@ -60,6 +60,7 @@ void WorkerThreadPool::_process_task(Task *p_task) {
 	ThreadData &curr_thread = threads[pool_thread_index];
 	Task *prev_task = nullptr; // In case this is recursively called.
 	bool prev_has_pump_task = false;
+	void (*prev_only_native)(void *) = nullptr;
 
 	bool safe_for_nodes_backup = is_current_thread_safe_for_nodes();
 	CallQueue *call_queue_backup = MessageQueue::get_singleton() != MessageQueue::get_main_singleton() ? MessageQueue::get_singleton() : nullptr;
@@ -82,6 +83,9 @@ void WorkerThreadPool::_process_task(Task *p_task) {
 		// A task run nested inside a pump task is still on the pump's thread: it keeps the pump's rules.
 		prev_has_pump_task = curr_thread.has_pump_task;
 		curr_thread.has_pump_task = prev_has_pump_task || p_task->is_pump_task;
+		// An OnlyNativeScope binds the task that opened it, not the ones it runs while waiting.
+		prev_only_native = curr_thread.only_native;
+		curr_thread.only_native = nullptr;
 		if (p_task->pending_notify_yield_over) {
 			curr_thread.yield_is_over = true;
 		}
@@ -169,6 +173,7 @@ void WorkerThreadPool::_process_task(Task *p_task) {
 	{
 		curr_thread.current_task = prev_task;
 		curr_thread.has_pump_task = prev_has_pump_task;
+		curr_thread.only_native = prev_only_native;
 		if (low_priority) {
 			low_priority_threads_used--;
 
@@ -294,7 +299,7 @@ void WorkerThreadPool::_notify_threads(const ThreadData *p_current_thread_data, 
 		}
 		if (th.current_task) {
 			// Good thread for promoting low-prio?
-			if (to_promote && th.awaited_task && th.current_task->low_priority) {
+			if (to_promote && th.awaited_task && th.current_task->low_priority && !th.only_native) {
 				if (likely(&th != p_current_thread_data)) {
 					th.cond_var.notify_one();
 				}
@@ -319,7 +324,9 @@ void WorkerThreadPool::_notify_threads(const ThreadData *p_current_thread_data, 
 			i++, notify_index = (notify_index + 1) % thread_count) {
 		ThreadData &th = threads[notify_index];
 
-		if (th.signaled || th.has_pump_task) { // (A pump thread only runs the task it awaits: see _wait_collaboratively().)
+		// (A pump thread only runs the task it awaits, and one in an OnlyNativeScope only tasks of its kind
+		// or the one it awaits: see _wait_collaboratively(). Called, they wouldn't take the task.)
+		if (th.signaled || th.has_pump_task || th.only_native) {
 			continue;
 		}
 		if (th.awaited_task) {
@@ -534,7 +541,10 @@ void WorkerThreadPool::_wait_collaboratively(ThreadData *p_caller_pool_thread, T
 				break;
 			}
 
-			if (p_caller_pool_thread->current_task->low_priority && low_priority_task_queue.first()) {
+			// OnlyNativeScope: lending this thread's low-priority slot (the promotion below) or taking the
+			// first queued task is only for tasks of its kind (further below).
+			const bool only_native = p_caller_pool_thread->only_native != nullptr;
+			if (p_caller_pool_thread->current_task->low_priority && low_priority_task_queue.first() && !only_native) {
 				if (_try_promote_low_priority_task()) {
 					_notify_threads(p_caller_pool_thread, 1, 0);
 				}
@@ -562,6 +572,59 @@ void WorkerThreadPool::_wait_collaboratively(ThreadData *p_caller_pool_thread, T
 						task_queue.remove(&p_task->task_elem);
 					}
 				}
+			} else if (only_native) {
+				// The awaited task itself, if nobody took it yet. Else the first queued task of the kind (also
+				// from the queue waiting for a low-priority slot: likely what this one waits for, queued behind
+				// others): with an idle thread, it's handed to it (promoted, if it was waiting for a slot), so
+				// it runs alongside and this one returns as soon as what it awaits ends; with none, it's run
+				// here, as a plain wait would.
+				bool waiting_for_slot = false;
+				if (p_task != ThreadData::YIELDING && p_task->task_elem.in_list()) {
+					task_to_process = p_task;
+					for (SelfList<Task> *E = low_priority_task_queue.first(); E; E = E->next()) {
+						if (E == &p_task->task_elem) {
+							waiting_for_slot = true;
+							break;
+						}
+					}
+				} else {
+					for (SelfList<Task> *E = task_queue.first(); E && !task_to_process; E = E->next()) {
+						if (E->self()->native_func == p_caller_pool_thread->only_native) {
+							task_to_process = E->self();
+						}
+					}
+					for (SelfList<Task> *E = low_priority_task_queue.first(); E && !task_to_process; E = E->next()) {
+						if (E->self()->native_func == p_caller_pool_thread->only_native) {
+							task_to_process = E->self();
+							waiting_for_slot = true;
+						}
+					}
+					if (task_to_process) {
+						bool idle = false;
+						for (uint32_t i = 0; i < threads.size() && !idle; i++) {
+							idle = !threads[i].current_task && !threads[i].signaled;
+						}
+						if (idle) {
+							if (waiting_for_slot) {
+								low_priority_task_queue.remove(&task_to_process->task_elem);
+								task_queue.add_last(&task_to_process->task_elem);
+								low_priority_threads_used++; // As promoted; _process_task() gives it back.
+							}
+							_notify_threads(p_caller_pool_thread, 1, 0);
+							task_to_process = nullptr;
+						}
+					}
+				}
+				if (task_to_process) {
+					if (waiting_for_slot) {
+						low_priority_task_queue.remove(&task_to_process->task_elem);
+						low_priority_threads_used++; // As if promoted; _process_task() gives it back.
+					} else {
+						task_queue.remove(&task_to_process->task_elem);
+					}
+				}
+				// (A thread waiting like this is not called by _notify_threads for other tasks: it wouldn't
+				// take them.)
 			} else if (p_caller_pool_thread->pool->task_queue.first()) {
 				task_to_process = task_queue.first()->self();
 				if (p_task == ThreadData::YIELDING && task_to_process->is_pump_task) {
@@ -654,6 +717,22 @@ void WorkerThreadPool::yield() {
 		ScriptServer::thread_enter();
 	} else {
 		task_mutex.unlock();
+	}
+}
+
+WorkerThreadPool::OnlyNativeScope::OnlyNativeScope(void (*p_native_func)(void *)) {
+	WorkerThreadPool *pool = WorkerThreadPool::get_singleton();
+	int index = pool->get_thread_index();
+	if (index != -1) {
+		thread = &pool->threads[index];
+		backup = thread->only_native;
+		thread->only_native = p_native_func;
+	}
+}
+
+WorkerThreadPool::OnlyNativeScope::~OnlyNativeScope() {
+	if (thread) {
+		thread->only_native = backup;
 	}
 }
 

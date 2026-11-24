@@ -121,6 +121,7 @@ private:
 		bool has_pump_task : 1; // A pump task is on this thread's stack: the thread only runs the task it awaits (and one pump at most).
 		Task *current_task = nullptr;
 		Task *awaited_task = nullptr; // Null if not awaiting the condition variable, or special value (YIELDING).
+		void (*only_native)(void *) = nullptr; // Set by an OnlyNativeScope of the task running: see there.
 		ConditionVariable cond_var;
 		WorkerThreadPool *pool = nullptr;
 
@@ -250,6 +251,22 @@ public:
 	Error wait_for_task_completion(TaskID p_task_id);
 
 	void yield();
+
+	// While alive on a pool thread, the collaborative waits of the task running there (yield(),
+	// wait_for_task_completion()) only take, from the queues, tasks running the native function
+	// `p_native_func`, or the task awaited itself; the others are left to the other threads. For a task
+	// that waits for others of its own kind (a resource load waiting for a dependency, or for a nested
+	// load it no longer needs): a plain collaborative wait takes whatever task comes first and only
+	// returns when that one ends, so the load could stay stuck for seconds behind an unrelated long task.
+	// Tasks run meanwhile are not bound by it (they may open their own). No effect outside pool threads.
+	class OnlyNativeScope {
+		ThreadData *thread = nullptr;
+		void (*backup)(void *) = nullptr;
+
+	public:
+		explicit OnlyNativeScope(void (*p_native_func)(void *));
+		~OnlyNativeScope();
+	};
 	void notify_yield_over(TaskID p_task_id);
 
 	template <typename C, typename M, typename U>
