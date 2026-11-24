@@ -1866,6 +1866,7 @@ Error RenderingDeviceDriverVulkan::initialize(uint32_t p_device_index, uint32_t 
 
 #ifdef WINDOWS_ENABLED
 	fsr_upscaling.set_device(physical_device, vk_device);
+	dlss_device = context_driver->get_dlss().register_device(physical_device);
 #endif
 
 	max_descriptor_sets_per_pool = GLOBAL_GET("rendering/rendering_device/vulkan/max_descriptors_per_pool");
@@ -7419,6 +7420,12 @@ bool RenderingDeviceDriverVulkan::has_feature(Features p_feature) {
 #else
 			return false;
 #endif
+		case SUPPORTS_DLSS:
+#if defined(WINDOWS_ENABLED)
+			return dlss_device && context_driver->get_dlss().is_available();
+#else
+			return false;
+#endif
 		case SUPPORTS_HDR_OUTPUT:
 #if defined(WINDOWS_ENABLED)
 			// When using a Vulkan swapchain on Windows, some configurations
@@ -7490,6 +7497,13 @@ RenderingDeviceDriverVulkan::RenderingDeviceDriverVulkan(RenderingContextDriverV
 }
 
 RenderingDeviceDriverVulkan::~RenderingDeviceDriverVulkan() {
+#ifdef WINDOWS_ENABLED
+	// Streamline shuts down before the device it works on is destroyed.
+	if (dlss_device) {
+		context_driver->get_dlss().shutdown();
+	}
+#endif
+
 #if defined(DEBUG_ENABLED) || defined(DEV_ENABLED)
 	if (breadcrumb_buffer != BufferID()) {
 		buffer_free(breadcrumb_buffer);

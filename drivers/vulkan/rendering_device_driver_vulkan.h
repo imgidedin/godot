@@ -415,6 +415,33 @@ public:
 	// For effects that record into the command buffer through vendor SDKs (in a driver callback).
 	static VkCommandBuffer command_buffer_get_vk(CommandBufferID p_cmd_buffer) { return ((const CommandBufferInfo *)p_cmd_buffer.id)->vk_command_buffer; }
 
+	// For effects that hand Godot's textures to vendor SDKs, which need the whole description in Vulkan.
+	struct TextureNativeInfo {
+		VkImage image = VK_NULL_HANDLE;
+		VkImageView view = VK_NULL_HANDLE;
+		VkFormat format = VK_FORMAT_UNDEFINED; // Of the view.
+		uint32_t width = 0;
+		uint32_t height = 0;
+		uint32_t mip_levels = 0;
+		uint32_t array_layers = 0;
+		VkImageCreateFlags flags = 0;
+		VkImageUsageFlags usage = 0;
+	};
+	static TextureNativeInfo texture_get_native_info(TextureID p_texture) {
+		const TextureInfo *tex_info = (const TextureInfo *)p_texture.id;
+		TextureNativeInfo info;
+		info.image = tex_info->vk_view_create_info.image;
+		info.view = tex_info->vk_view;
+		info.format = tex_info->vk_view_create_info.format;
+		info.width = tex_info->vk_create_info.extent.width;
+		info.height = tex_info->vk_create_info.extent.height;
+		info.mip_levels = tex_info->vk_create_info.mipLevels;
+		info.array_layers = tex_info->vk_create_info.arrayLayers;
+		info.flags = tex_info->vk_create_info.flags;
+		info.usage = tex_info->vk_create_info.usage;
+		return info;
+	}
+
 	virtual CommandBufferID command_buffer_create(CommandPoolID p_cmd_pool) override final;
 	virtual bool command_buffer_begin(CommandBufferID p_cmd_buffer) override final;
 	virtual bool command_buffer_begin_secondary(CommandBufferID p_cmd_buffer, RenderPassID p_render_pass, uint32_t p_subpass, FramebufferID p_framebuffer) override final;
@@ -833,9 +860,11 @@ public:
 #ifdef WINDOWS_ENABLED
 private:
 	FSRUpscalingVulkan fsr_upscaling;
+	bool dlss_device = false; // The device DLSS runs on (the main one, not a local rendering device).
 
 public:
 	FSRUpscalingVulkan &get_fsr_upscaling() { return fsr_upscaling; }
+	DLSSVulkan &get_dlss() { return context_driver->get_dlss(); }
 #endif
 
 	RenderingDeviceDriverVulkan(RenderingContextDriverVulkan *p_context_driver);

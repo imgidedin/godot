@@ -1086,6 +1086,23 @@ Patches:
 - `0002-spirv-headers.patch` ([GH-111452](https://github.com/godotengine/godot/pull/111452))
 
 
+## streamline
+
+- Upstream: https://github.com/NVIDIA-RTX/Streamline
+- Version: 2.14.16 (release `streamline-sdk-v2.14.16.zip`, 2026; DLSS 310.9.16)
+- License: MIT (these headers; the signed DLLs they load, including DLSS, are under the NVIDIA RTX
+  SDKs license and are not part of this repository)
+
+Files extracted from upstream source:
+
+- `include/` from the SDK: `sl.h`, `sl_appidentity.h`, `sl_consts.h`, `sl_core_api.h`,
+  `sl_core_types.h`, `sl_device_wrappers.h`, `sl_dlss.h`, `sl_result.h`,
+  `sl_security.h`, `sl_struct.h`, `sl_version.h`
+- `license.txt` as `LICENSE.txt`
+
+Line endings converted to LF.
+
+
 ## swappy-frame-pacing
 
 - Upstream: https://android.googlesource.com/platform/frameworks/opt/gamesdk/ via https://github.com/godotengine/godot-swappy

@@ -5366,7 +5366,11 @@
 			Use AMD FSR Upscaling for the viewport's 3D buffer, through the AMD FSR API: FSR 4 on the Radeon GPUs that run it (RX 9000, and RX 6000 and 7000 with its INT8 model), FSR 3.1 on other GPUs. The amount of scaling can be set using [member Viewport.scaling_3d_scale]. Values less than [code]1.0[/code] will result in the viewport being upscaled. Values greater than [code]1.0[/code] are not supported and bilinear downsampling will be used instead. A value of [code]1.0[/code] will use it at native resolution as an antialiasing solution. 3D MSAA and TAA are disabled internally while it is in use.
 			[b]Note:[/b] Only supported with the Forward+ renderer on Vulkan on Windows, with the signed AMD FSR API DLLs ([code]amd_fidelityfx_loader_vk.dll[/code] and [code]amd_fidelityfx_upscaler_vk.dll[/code]) next to the executable. Where it is not available, FSR 2.2 is used instead.
 		</constant>
-		<constant name="VIEWPORT_SCALING_3D_MODE_MAX" value="7" enum="ViewportScaling3DMode">
+		<constant name="VIEWPORT_SCALING_3D_MODE_DLSS" value="7" enum="ViewportScaling3DMode">
+			Use NVIDIA DLSS Super Resolution for the viewport's 3D buffer, through NVIDIA Streamline. The amount of scaling can be set using [member Viewport.scaling_3d_scale]: DLSS picks its quality mode from it (1.0 is DLAA, antialiasing at native resolution; values below 1/3, the Ultra Performance ratio, are clamped to it). Values greater than [code]1.0[/code] are not supported and bilinear downsampling will be used instead. 3D MSAA and TAA are disabled internally while it is in use.
+			[b]Note:[/b] Only supported with the Forward+ renderer on Vulkan on Windows, on NVIDIA RTX GPUs, with the signed Streamline and DLSS DLLs next to the executable. Where it is not available, [constant VIEWPORT_SCALING_3D_MODE_FSR_UPSCALING] is used instead (and FSR 2.2 where that is not available either).
+		</constant>
+		<constant name="VIEWPORT_SCALING_3D_MODE_MAX" value="8" enum="ViewportScaling3DMode">
 			Represents the size of the [enum ViewportScaling3DMode] enum.
 		</constant>
 		<constant name="VIEWPORT_UPDATE_DISABLED" value="0" enum="ViewportUpdateMode">

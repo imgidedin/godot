@@ -2851,6 +2851,10 @@
 			Support for AMD FSR Upscaling through the AMD FSR API: FSR 4 on the Radeon GPUs that run it, FSR 3.1 on other GPUs. Requires the signed AMD FSR API DLLs ([code]amd_fidelityfx_loader_vk.dll[/code] and [code]amd_fidelityfx_upscaler_vk.dll[/code]) next to the executable.
 			[b]Note:[/b] This is currently only supported when using Vulkan on Windows.
 		</constant>
+		<constant name="SUPPORTS_DLSS" value="15" enum="Features">
+			Support for NVIDIA DLSS Super Resolution through NVIDIA Streamline. Requires an NVIDIA RTX GPU and the signed Streamline and DLSS DLLs ([code]sl.interposer.dll[/code], [code]sl.common.dll[/code], [code]sl.dlss.dll[/code] and [code]nvngx_dlss.dll[/code]) next to the executable.
+			[b]Note:[/b] This is currently only supported when using Vulkan on Windows.
+		</constant>
 		<constant name="LIMIT_MAX_BOUND_UNIFORM_SETS" value="0" enum="Limit">
 			Maximum number of uniform sets that can be bound at a given time.
 		</constant>

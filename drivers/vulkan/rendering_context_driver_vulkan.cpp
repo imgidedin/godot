@@ -391,6 +391,12 @@ RenderingContextDriverVulkan::~RenderingContextDriverVulkan() {
 		functions.DestroyDebugReportCallbackEXT(instance, debug_report, get_allocation_callbacks(VK_OBJECT_TYPE_DEBUG_REPORT_CALLBACK_EXT));
 	}
 
+#ifdef WINDOWS_ENABLED
+	// Streamline shuts down before the instance goes (normally it already did, with the device; see
+	// ~RenderingDeviceDriverVulkan).
+	dlss.shutdown();
+#endif
+
 	if (instance != VK_NULL_HANDLE) {
 		vkDestroyInstance(instance, get_allocation_callbacks(VK_OBJECT_TYPE_INSTANCE));
 	}
@@ -903,7 +909,15 @@ Error RenderingContextDriverVulkan::initialize() {
 	Error err;
 
 #ifdef USE_VOLK
-	if (volkInitialize() != VK_SUCCESS) {
+	bool vulkan_loaded = false;
+#ifdef WINDOWS_ENABLED
+	if (dlss.initialize_before_vulkan()) {
+		// Vulkan through Streamline, which adds what DLSS needs to the instance and devices.
+		volkInitializeCustom(dlss.get_instance_proc_addr());
+		vulkan_loaded = true;
+	}
+#endif
+	if (!vulkan_loaded && volkInitialize() != VK_SUCCESS) {
 		return FAILED;
 	}
 #endif

@@ -36,6 +36,10 @@
 #include "core/templates/local_vector.h"
 #include "servers/rendering/rendering_context_driver.h"
 
+#ifdef WINDOWS_ENABLED
+#include "drivers/vulkan/dlss_vulkan.h"
+#endif
+
 #if defined(DEBUG_ENABLED)
 #define VK_TRACK_DRIVER_MEMORY
 #define VK_TRACK_DEVICE_MEMORY
@@ -179,6 +183,15 @@ public:
 	VkQueueFamilyProperties queue_family_get(uint32_t p_device_index, uint32_t p_queue_family_index) const;
 	bool queue_family_supports_present(VkPhysicalDevice p_physical_device, uint32_t p_queue_family_index, SurfaceID p_surface) const;
 	const Functions &functions_get() const;
+
+#ifdef WINDOWS_ENABLED
+private:
+	// Set up before Vulkan is loaded (it is then loaded through Streamline), so it lives here, with the instance.
+	DLSSVulkan dlss;
+
+public:
+	DLSSVulkan &get_dlss() { return dlss; }
+#endif
 
 	static VkAllocationCallbacks *get_allocation_callbacks(VkObjectType p_type);
 

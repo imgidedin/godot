@@ -124,6 +124,16 @@ bool RenderForwardClustered::RenderBufferDataForwardClustered::ensure_fsr_upscal
 }
 #endif
 
+#ifdef DLSS_ENABLED
+bool RenderForwardClustered::RenderBufferDataForwardClustered::ensure_dlss(RendererRD::DLSSEffect *p_effect) {
+	if (dlss_context == nullptr) {
+		dlss_context = p_effect->create_context(render_buffers->get_internal_size(), render_buffers->get_target_size());
+		return true;
+	}
+	return false;
+}
+#endif
+
 void RenderForwardClustered::RenderBufferDataForwardClustered::free_data() {
 	// JIC, should already have been cleared
 	if (render_buffers) {
@@ -160,6 +170,17 @@ void RenderForwardClustered::RenderBufferDataForwardClustered::free_data() {
 			renderer->fsr_upscaling_effect->free_context(fsr_upscaling_context);
 		}
 		fsr_upscaling_context = nullptr;
+	}
+#endif
+
+#ifdef DLSS_ENABLED
+	if (dlss_context) {
+		// As with the FSR context above.
+		RenderForwardClustered *renderer = RenderForwardClustered::get_singleton();
+		if (renderer != nullptr) {
+			renderer->dlss_effect->free_context(dlss_context);
+		}
+		dlss_context = nullptr;
 	}
 #endif
 
@@ -1816,6 +1837,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		SCALE_FSR2,
 		SCALE_MFX,
 		SCALE_FSR_UPSCALING,
+		SCALE_DLSS,
 	} scale_type = SCALE_NONE;
 
 	switch (rb->get_scaling_3d_mode()) {
@@ -1832,6 +1854,13 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		case RSE::VIEWPORT_SCALING_3D_MODE_FSR_UPSCALING:
 #ifdef FSR_UPSCALING_ENABLED
 			scale_type = SCALE_FSR_UPSCALING;
+#else
+			scale_type = SCALE_NONE;
+#endif
+			break;
+		case RSE::VIEWPORT_SCALING_3D_MODE_DLSS:
+#ifdef DLSS_ENABLED
+			scale_type = SCALE_DLSS;
 #else
 			scale_type = SCALE_NONE;
 #endif
@@ -2266,7 +2295,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		RD::get_singleton()->draw_command_end_label();
 
 		if (using_motion_pass) {
-			if (scale_type == SCALE_MFX || scale_type == SCALE_FSR_UPSCALING) {
+			if (scale_type == SCALE_MFX || scale_type == SCALE_FSR_UPSCALING || scale_type == SCALE_DLSS) {
 				// The motion of the camera for every pixel; the motion pass then writes the moving objects' own.
 				motion_vectors_store->process(rb,
 						p_render_data->scene_data->cam_projection, p_render_data->scene_data->cam_transform,
@@ -2502,6 +2531,9 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 	// Retires the contexts of render buffers freed or switched to another mode, also when this one no longer upscales.
 	fsr_upscaling_effect->process_pending_frees();
 #endif
+#ifdef DLSS_ENABLED
+	dlss_effect->process_pending_frees();
+#endif
 
 	if (rb_data.is_valid() && (using_upscaling || using_taa)) {
 		if (scale_type == SCALE_FSR2) {
@@ -2610,6 +2642,46 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 					params.fovy = Math::deg_to_rad(fovy);
 					params.reset = reset;
 					fsr_upscaling_effect->upscale(params);
+				}
+
+				RD::get_singleton()->draw_command_end_label();
+			}
+#endif
+		} else if (scale_type == SCALE_DLSS) {
+#ifdef DLSS_ENABLED
+			const bool reset = rb_data->ensure_dlss(dlss_effect);
+			RendererRD::DLSSContext *context = rb_data->get_dlss_context();
+
+			if (context != nullptr) {
+				RD::get_singleton()->draw_command_begin_label("NVIDIA DLSS");
+				RENDER_TIMESTAMP("NVIDIA DLSS");
+
+				Projection correction;
+				correction.set_depth_correction(true, true, false);
+
+				for (uint32_t v = 0; v < rb->get_view_count(); v++) {
+					real_t fov = p_render_data->scene_data->cam_projection.get_fov();
+					real_t aspect = p_render_data->scene_data->cam_projection.get_aspect();
+					real_t fovy = p_render_data->scene_data->cam_projection.get_fovy(fov, 1.0 / aspect);
+
+					RendererRD::DLSSEffect::Parameters params;
+					params.context = context;
+					params.internal_size = rb->get_internal_size();
+					params.color = rb->get_internal_texture(v);
+					params.depth = rb->get_depth_texture(v);
+					params.velocity = rb->get_velocity_buffer(false, v);
+					params.output = rb->get_upscaled_texture(v);
+					// Same jitter convention as FSR 2 (pixels).
+					params.jitter = p_render_data->scene_data->taa_jitter * Vector2(rb->get_internal_size()) * 0.5f;
+					params.z_near = p_render_data->scene_data->z_near;
+					params.z_far = p_render_data->scene_data->z_far;
+					params.fovy = Math::deg_to_rad(fovy);
+					params.projection = correction * p_render_data->scene_data->cam_projection;
+					params.prev_projection = correction * p_render_data->scene_data->prev_cam_projection;
+					params.transform = p_render_data->scene_data->cam_transform;
+					params.prev_transform = p_render_data->scene_data->prev_cam_transform;
+					params.reset = reset;
+					dlss_effect->upscale(params);
 				}
 
 				RD::get_singleton()->draw_command_end_label();
@@ -5433,6 +5505,9 @@ RenderForwardClustered::RenderForwardClustered() {
 #ifdef FSR_UPSCALING_ENABLED
 	fsr_upscaling_effect = memnew(RendererRD::FSRUpscalingEffect);
 #endif
+#ifdef DLSS_ENABLED
+	dlss_effect = memnew(RendererRD::DLSSEffect);
+#endif
 #if defined(METAL_MFXTEMPORAL_ENABLED) || defined(FSR_UPSCALING_ENABLED)
 	motion_vectors_store = memnew(RendererRD::MotionVectorsStore);
 #endif
@@ -5467,6 +5542,13 @@ RenderForwardClustered::~RenderForwardClustered() {
 	if (fsr_upscaling_effect) {
 		memdelete(fsr_upscaling_effect);
 		fsr_upscaling_effect = nullptr;
+	}
+#endif
+
+#ifdef DLSS_ENABLED
+	if (dlss_effect) {
+		memdelete(dlss_effect);
+		dlss_effect = nullptr;
 	}
 #endif
 

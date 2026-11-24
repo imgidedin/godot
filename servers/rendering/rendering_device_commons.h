@@ -1038,6 +1038,8 @@ public:
 		SUPPORTS_HDR_OUTPUT,
 		// AMD FSR Upscaling through the AMD FSR API (FSR 4 or FSR 3.1, whichever the GPU runs).
 		SUPPORTS_FSR_UPSCALING,
+		// NVIDIA DLSS Super Resolution through NVIDIA Streamline.
+		SUPPORTS_DLSS,
 	};
 
 	enum SubgroupOperations {

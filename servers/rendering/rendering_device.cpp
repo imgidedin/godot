@@ -8716,6 +8716,12 @@ void RenderingDevice::capture_timestamp(const String &p_name) {
 	frames[frame].timestamp_count++;
 }
 
+RDD::TextureID RenderingDevice::texture_get_driver_id(RID p_texture) {
+	Texture *tex = texture_owner.get_or_null(p_texture);
+	ERR_FAIL_NULL_V(tex, RDD::TextureID());
+	return tex->driver_id;
+}
+
 uint64_t RenderingDevice::get_driver_resource(DriverResource p_resource, RID p_rid, uint64_t p_index) {
 	ERR_RENDER_THREAD_GUARD_V(0);
 
@@ -9776,6 +9782,7 @@ void RenderingDevice::_bind_methods() {
 	BIND_ENUM_CONSTANT(SUPPORTS_RAYTRACING_PIPELINE);
 	BIND_ENUM_CONSTANT(SUPPORTS_HDR_OUTPUT);
 	BIND_ENUM_CONSTANT(SUPPORTS_FSR_UPSCALING);
+	BIND_ENUM_CONSTANT(SUPPORTS_DLSS);
 
 	BIND_ENUM_CONSTANT(LIMIT_MAX_BOUND_UNIFORM_SETS);
 	BIND_ENUM_CONSTANT(LIMIT_MAX_FRAMEBUFFER_COLOR_ATTACHMENTS);
