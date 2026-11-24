@@ -100,6 +100,10 @@ public:
 
 	FUNC1RC(ShapeType, shape_get_type, RID);
 	FUNC1RC(Variant, shape_get_data, RID);
+	// Safe from any thread on the backend side (see PhysicsServer3D::shape_build): called directly, not queued.
+	// With the physics on its own thread, a queued shape_set_data could still be on its way: call this only
+	// after the shape data reached the backend (the game runs the physics on the main thread).
+	virtual bool shape_build(RID p_shape) override { return physics_server_3d->shape_build(p_shape); }
 	FUNC1RC(real_t, shape_get_custom_solver_bias, RID);
 #if 0
 	//these work well, but should be used from the main thread only

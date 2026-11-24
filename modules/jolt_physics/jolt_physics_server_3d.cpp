@@ -138,6 +138,14 @@ void JoltPhysicsServer3D::shape_set_data(RID p_shape, const Variant &p_data) {
 	shape->set_data(p_data);
 }
 
+bool JoltPhysicsServer3D::shape_build(RID p_shape) {
+	JoltShape3D *shape = shape_owner.get_or_null(p_shape);
+	ERR_FAIL_NULL_V(shape, false);
+	// try_build locks the shape (jolt_ref_mutex), so this is safe from a worker thread; the body that
+	// takes the shape later gets the one built here.
+	return shape->try_build() != nullptr;
+}
+
 Variant JoltPhysicsServer3D::shape_get_data(RID p_shape) const {
 	const JoltShape3D *shape = shape_owner.get_or_null(p_shape);
 	ERR_FAIL_NULL_V(shape, Variant());

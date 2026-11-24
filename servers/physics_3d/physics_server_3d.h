@@ -284,6 +284,12 @@ public:
 
 	virtual real_t shape_get_custom_solver_bias(RID p_shape) const = 0;
 
+	// Builds the backend's own representation of the shape now, so that the thread that later adds a
+	// body using it does not pay for it (a big concave shape takes milliseconds). Safe to call from any
+	// thread. Returns false when the backend has nothing to build ahead (the default) or the shape is
+	// invalid.
+	virtual bool shape_build(RID p_shape) { return false; }
+
 	/* SPACE API */
 
 	virtual RID space_create() = 0;
