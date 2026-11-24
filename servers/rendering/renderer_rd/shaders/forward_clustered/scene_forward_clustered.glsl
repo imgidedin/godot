@@ -134,6 +134,8 @@ layout(set = MATERIAL_UNIFORM_SET, binding = 0, std140) uniform MaterialUniforms
 #endif
 
 float global_time;
+// True while vertex() computes the previous frame's position, for motion vectors (IN_PREVIOUS_FRAME).
+bool global_in_previous_frame = false;
 
 #ifdef MODE_DUAL_PARABOLOID
 
@@ -809,6 +811,7 @@ void main() {
 			prev_vertex);
 
 	global_time = scene_data_block.prev_data.time;
+	global_in_previous_frame = true;
 	vertex_shader(prev_vertex,
 #ifdef NORMAL_USED
 			prev_normal,
@@ -852,6 +855,7 @@ void main() {
 
 	// Current vertex.
 	global_time = scene_data_block.data.time;
+	global_in_previous_frame = false;
 	vertex_shader(vertex,
 #ifdef NORMAL_USED
 			normal,

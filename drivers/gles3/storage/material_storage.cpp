@@ -1296,6 +1296,7 @@ MaterialStorage::MaterialStorage() {
 		actions.renames["CLIP_SPACE_FAR"] = "SHADER_SPACE_FAR";
 		actions.renames["IN_SHADOW_PASS"] = "IN_SHADOW_PASS";
 		actions.renames["IN_DEPTH_PASS"] = "IN_DEPTH_PASS";
+		actions.renames["IN_PREVIOUS_FRAME"] = "false"; // No motion pass in this renderer.
 		actions.renames["VIEWPORT_SIZE"] = "scene_data_block.data.viewport_size";
 
 		actions.renames["FRAGCOORD"] = "gl_FragCoord";

@@ -797,6 +797,20 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 					Stage stage = p_actions.entry_point_stages[fnode->name];
 					_dump_function_deps(pnode, fnode->name, function_code, r_gen_code.stage_globals[stage], added_funcs_per_stage[stage]);
 					r_gen_code.code[fnode->name] = function_code[fnode->name];
+
+					// The entry point and every function it calls (directly or not).
+					bool reads_time = time_functions.has(fnode->name);
+					bool reads_view = view_functions.has(fnode->name);
+					for (const StringName &F : added_funcs_per_stage[stage]) {
+						reads_time = reads_time || time_functions.has(F);
+						reads_view = reads_view || view_functions.has(F);
+					}
+					if (stage == STAGE_VERTEX) {
+						r_gen_code.uses_vertex_time = r_gen_code.uses_vertex_time || reads_time;
+						r_gen_code.uses_vertex_view = r_gen_code.uses_vertex_view || reads_view;
+					} else if (stage == STAGE_FRAGMENT) {
+						r_gen_code.uses_fragment_time = r_gen_code.uses_fragment_time || reads_time;
+					}
 				}
 
 				function = nullptr;
@@ -992,13 +1006,13 @@ String ShaderCompiler::_dump_node_code(const SL::Node *p_node, int p_level, Gene
 				}
 			}
 
+			// Which functions read TIME or the camera: the stage flags are set from them once each
+			// stage's functions are known (a helper called from vertex() counts as vertex()).
 			if (vnode->name == time_name) {
-				if (p_actions.entry_point_stages.has(current_func_name) && p_actions.entry_point_stages[current_func_name] == STAGE_VERTEX) {
-					r_gen_code.uses_vertex_time = true;
-				}
-				if (p_actions.entry_point_stages.has(current_func_name) && p_actions.entry_point_stages[current_func_name] == STAGE_FRAGMENT) {
-					r_gen_code.uses_fragment_time = true;
-				}
+				time_functions.insert(current_func_name);
+			}
+			if (view_names.has(vnode->name)) {
+				view_functions.insert(current_func_name);
 			}
 
 		} break;
@@ -1639,6 +1653,9 @@ Error ShaderCompiler::compile(RSE::ShaderMode p_mode, const String &p_code, Iden
 	}
 	r_gen_code.uses_fragment_time = false;
 	r_gen_code.uses_vertex_time = false;
+	r_gen_code.uses_vertex_view = false;
+	time_functions.clear();
+	view_functions.clear();
 	r_gen_code.uses_global_textures = false;
 	r_gen_code.uses_screen_texture_mipmaps = false;
 	r_gen_code.uses_screen_texture = false;
@@ -1662,6 +1679,17 @@ void ShaderCompiler::initialize(DefaultIdentifierActions p_actions) {
 	actions = p_actions;
 
 	time_name = "TIME";
+	// The built-ins through which a vertex can depend on the camera (billboards, distance-based
+	// bending): the motion pass then computes the previous position with the previous camera.
+	// MODELVIEW_MATRIX and PROJECTION_MATRIX are left out: the usual transform, whose motion the
+	// camera's own motion vectors already cover.
+	view_names.insert("VIEW_MATRIX");
+	view_names.insert("INV_VIEW_MATRIX");
+	view_names.insert("MAIN_CAM_INV_VIEW_MATRIX");
+	view_names.insert("CAMERA_POSITION_WORLD");
+	view_names.insert("CAMERA_DIRECTION_WORLD");
+	view_names.insert("NODE_POSITION_VIEW");
+	view_names.insert("EYE_OFFSET");
 
 	List<String> func_list;
 

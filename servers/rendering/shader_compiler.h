@@ -86,6 +86,8 @@ public:
 		bool uses_global_textures = false;
 		bool uses_fragment_time = false;
 		bool uses_vertex_time = false;
+		// vertex() reads the camera (view matrices, camera position): the vertex can move with it.
+		bool uses_vertex_view = false;
 		bool uses_screen_texture_mipmaps = false;
 		bool uses_screen_texture = false;
 		bool uses_depth_texture = false;
@@ -121,6 +123,10 @@ private:
 	const ShaderLanguage::FunctionNode *function = nullptr;
 	StringName current_func_name;
 	StringName time_name;
+	HashSet<StringName> view_names;
+	// The functions of the shader being compiled that read TIME, or the camera (view_names).
+	HashSet<StringName> time_functions;
+	HashSet<StringName> view_functions;
 	HashSet<StringName> texture_functions;
 
 	HashSet<StringName> used_name_defines;

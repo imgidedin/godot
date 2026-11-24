@@ -203,6 +203,7 @@ void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 	uses_depth_texture = gen_code.uses_depth_texture;
 	uses_normal_texture = gen_code.uses_normal_roughness_texture;
 	uses_vertex_time = gen_code.uses_vertex_time;
+	uses_vertex_view = gen_code.uses_vertex_view;
 	uses_fragment_time = gen_code.uses_fragment_time;
 	uses_normal |= uses_normal_map;
 	uses_normal |= uses_bent_normal_map;
@@ -248,7 +249,9 @@ void SceneShaderForwardClustered::ShaderData::set_code(const String &p_code) {
 }
 
 bool SceneShaderForwardClustered::ShaderData::is_animated() const {
-	return (uses_fragment_time && uses_discard) || (uses_vertex_time && uses_vertex);
+	// A vertex moved by time or by the camera moves between frames by itself: it is drawn in the
+	// motion pass, which computes its previous position with the previous time and camera.
+	return (uses_fragment_time && uses_discard) || ((uses_vertex_time || uses_vertex_view) && uses_vertex);
 }
 
 bool SceneShaderForwardClustered::ShaderData::casts_shadows() const {
@@ -742,6 +745,7 @@ void SceneShaderForwardClustered::init(const String p_defines) {
 		actions.renames["CLIP_SPACE_FAR"] = "SHADER_SPACE_FAR";
 		actions.renames["IN_SHADOW_PASS"] = "bool(scene_data_block.data.flags & SCENE_DATA_FLAGS_IN_SHADOW_PASS)";
 		actions.renames["IN_DEPTH_PASS"] = "IN_DEPTH_PASS";
+		actions.renames["IN_PREVIOUS_FRAME"] = "global_in_previous_frame";
 		actions.renames["VIEWPORT_SIZE"] = "read_viewport_size";
 
 		actions.renames["FRAGCOORD"] = "gl_FragCoord";
