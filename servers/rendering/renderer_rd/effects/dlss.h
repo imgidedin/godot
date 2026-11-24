@@ -53,6 +53,7 @@ class DLSSContext {
 	friend class DLSSEffect;
 	uint32_t viewport = 0; // sl::ViewportHandle.
 	uint32_t mode = 0; // sl::DLSSMode.
+	int preset = 0; // Index of rendering/scaling_3d/dlss_preset the options were set with.
 	Size2i target_size;
 };
 

@@ -73,6 +73,33 @@ static const char *_mode_name(sl::DLSSMode p_mode) {
 	}
 }
 
+static const sl::DLSSPreset PRESETS[] = { sl::DLSSPreset::eDefault, sl::DLSSPreset::ePresetJ, sl::DLSSPreset::ePresetK, sl::DLSSPreset::ePresetL, sl::DLSSPreset::ePresetM };
+static const char *PRESET_NAMES[] = { "default", "J", "K", "L", "M" };
+
+// The model (preset) for every mode: the project's choice, or NVIDIA's default per mode. Read every
+// frame (cached until the project settings change), so it can change while DLSS runs.
+static int _current_preset() {
+	return CLAMP(GLOBAL_GET_CACHED(int, "rendering/scaling_3d/dlss_preset"), 0, int(std::size(PRESETS)) - 1);
+}
+
+static sl::DLSSOptions _make_options(sl::DLSSMode p_mode, Size2i p_target_size, int p_preset) {
+	sl::DLSSOptions options;
+	options.mode = p_mode;
+	options.outputWidth = p_target_size.width;
+	options.outputHeight = p_target_size.height;
+	const sl::DLSSPreset preset = PRESETS[p_preset];
+	options.dlaaPreset = preset;
+	options.qualityPreset = preset;
+	options.balancedPreset = preset;
+	options.performancePreset = preset;
+	options.ultraPerformancePreset = preset;
+	options.ultraQualityPreset = preset;
+	// Godot's 3D buffer is linear HDR before tonemapping and before the camera exposure.
+	options.colorBuffersHDR = sl::Boolean::eTrue;
+	options.useAutoExposure = sl::Boolean::eTrue;
+	return options;
+}
+
 DLSSContext *DLSSEffect::create_context(Size2i p_internal_size, Size2i p_target_size) {
 	_process_pending_frees(false);
 
@@ -109,34 +136,18 @@ DLSSContext *DLSSEffect::create_context(Size2i p_internal_size, Size2i p_target_
 	const uint32_t height = p_internal_size.height;
 	const bool in_range = width >= MIN(chosen_settings.renderWidthMin, chosen_settings.optimalRenderWidth) && width <= MAX(chosen_settings.renderWidthMax, chosen_settings.optimalRenderWidth) && height >= MIN(chosen_settings.renderHeightMin, chosen_settings.optimalRenderHeight) && height <= MAX(chosen_settings.renderHeightMax, chosen_settings.optimalRenderHeight);
 	ERR_FAIL_COND_V_MSG(!in_range, nullptr, vformat("DLSS: %dx%d is outside the render sizes of the %s mode for %dx%d.", p_internal_size.width, p_internal_size.height, _mode_name(chosen), p_target_size.width, p_target_size.height));
-	options.mode = chosen;
-
-	// The model (preset) for every mode: the project's choice, or NVIDIA's default per mode.
-	static const sl::DLSSPreset presets[] = { sl::DLSSPreset::eDefault, sl::DLSSPreset::ePresetJ, sl::DLSSPreset::ePresetK, sl::DLSSPreset::ePresetL, sl::DLSSPreset::ePresetM };
-	const int preset_index = CLAMP(int(GLOBAL_GET("rendering/scaling_3d/dlss_preset")), 0, int(std::size(presets)) - 1);
-	const sl::DLSSPreset preset = presets[preset_index];
-	options.dlaaPreset = preset;
-	options.qualityPreset = preset;
-	options.balancedPreset = preset;
-	options.performancePreset = preset;
-	options.ultraPerformancePreset = preset;
-	options.ultraQualityPreset = preset;
-	// Godot's 3D buffer is linear HDR before tonemapping and before the camera exposure.
-	options.colorBuffersHDR = sl::Boolean::eTrue;
-	options.useAutoExposure = sl::Boolean::eTrue;
-
 	DLSSContext *context = memnew(DLSSContext);
 	context->viewport = next_viewport++;
 	context->mode = (uint32_t)chosen;
+	context->preset = _current_preset();
 	context->target_size = p_target_size;
 
-	const sl::Result result = sl_functions.dlss_set_options(sl::ViewportHandle(context->viewport), options);
+	const sl::Result result = sl_functions.dlss_set_options(sl::ViewportHandle(context->viewport), _make_options(chosen, p_target_size, context->preset));
 	if (result != sl::Result::eOk) {
 		memdelete(context);
 		ERR_FAIL_V_MSG(nullptr, vformat("DLSS: could not set the options (Streamline error %d).", (int)result));
 	}
-	static const char *preset_names[] = { "default", "J", "K", "L", "M" };
-	print_verbose(vformat("DLSS: %s, preset %s, %dx%d to %dx%d.", _mode_name(chosen), preset_names[preset_index], p_internal_size.width, p_internal_size.height, p_target_size.width, p_target_size.height));
+	print_verbose(vformat("DLSS: %s, preset %s, %dx%d to %dx%d.", _mode_name(chosen), PRESET_NAMES[context->preset], p_internal_size.width, p_internal_size.height, p_target_size.width, p_target_size.height));
 	return context;
 }
 
@@ -198,6 +209,19 @@ void DLSSEffect::upscale(const Parameters &p_params) {
 	}
 	sl::FrameToken *token = (sl::FrameToken *)frame_token;
 	const sl::ViewportHandle viewport(p_params.context->viewport);
+
+	// The preset changed (in the options of the game): the same viewport takes the new model.
+	const int preset = _current_preset();
+	if (preset != p_params.context->preset) {
+		const sl::Result result = sl_functions.dlss_set_options(viewport, _make_options((sl::DLSSMode)p_params.context->mode, p_params.context->target_size, preset));
+		if (result == sl::Result::eOk) {
+			p_params.context->preset = preset;
+			print_verbose(vformat("DLSS: preset %s.", PRESET_NAMES[preset]));
+		} else {
+			// Keeps upscaling with the model it had (and tries again next frame).
+			ERR_PRINT_ONCE(vformat("DLSS: could not change the preset (Streamline error %d).", (int)result));
+		}
+	}
 
 	// Camera: current clip to the previous one, as FSR 2's reprojection in Godot.
 	const Projection view_to_clip = p_params.projection;

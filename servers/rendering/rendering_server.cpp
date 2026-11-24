@@ -3772,7 +3772,7 @@ void RenderingServer::init() {
 	}
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/scaling_3d/scale", PROPERTY_HINT_RANGE, "0.1,2.0,0.0001"), 1.0);
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/scaling_3d/fsr_sharpness", PROPERTY_HINT_RANGE, "0,2,0.01"), 0.2f);
-	// The DLSS model for every quality mode, read when a viewport's DLSS starts: NVIDIA's default per mode, or one preset.
+	// The DLSS model for every quality mode (NVIDIA's default per mode, or one preset); a change applies on the next frame.
 	GLOBAL_DEF(PropertyInfo(Variant::INT, "rendering/scaling_3d/dlss_preset", PROPERTY_HINT_ENUM, "Default,J,K,L,M"), 0);
 
 	GLOBAL_DEF(PropertyInfo(Variant::FLOAT, "rendering/textures/default_filters/texture_mipmap_bias", PROPERTY_HINT_RANGE, "-2,2,0.001"), 0.0f);

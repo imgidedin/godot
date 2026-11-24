@@ -3405,7 +3405,7 @@
 			[b]Note:[/b] Changing this property requires a restart to take effect.
 		</member>
 		<member name="rendering/scaling_3d/dlss_preset" type="int" setter="" getter="" default="0">
-			The model NVIDIA DLSS uses in every quality mode ([constant Viewport.SCALING_3D_MODE_DLSS]): [b]Default[/b] is NVIDIA's choice per mode (K for DLAA, Quality and Balanced, M for Performance, L for Ultra Performance, as of DLSS 310.9); J, K, L and M force that preset. Read when a viewport's DLSS starts (when its size or 3D scaling changes).
+			The model NVIDIA DLSS uses in every quality mode ([constant Viewport.SCALING_3D_MODE_DLSS]): [b]Default[/b] is NVIDIA's choice per mode (K for DLAA, Quality and Balanced, M for Performance, L for Ultra Performance, as of DLSS 310.9); J, K, L and M force that preset. Changing it applies to the running DLSS on the next frame.
 		</member>
 		<member name="rendering/scaling_3d/fsr_sharpness" type="float" setter="" getter="" default="0.2">
 			Determines how sharp the upscaled image will be when using the FSR upscaling mode. Sharpness halves with every whole number. Values go from 0.0 (sharpest) to 2.0. Values above 2.0 won't make a visible difference.
