@@ -246,6 +246,25 @@ uint32_t LightStorage::light_get_shadow_caster_mask(RID p_light) const {
 	return light->shadow_caster_mask;
 }
 
+void LightStorage::light_directional_set_split_caster_mask(RID p_light, int p_split, uint32_t p_caster_mask) {
+	Light *light = light_owner.get_or_null(p_light);
+	ERR_FAIL_NULL(light);
+	ERR_FAIL_INDEX(p_split, 4);
+
+	light->split_caster_mask[p_split] = p_caster_mask;
+
+	light->version++;
+	light->dependency.changed_notify(Dependency::DEPENDENCY_CHANGED_LIGHT);
+}
+
+uint32_t LightStorage::light_directional_get_split_caster_mask(RID p_light, int p_split) const {
+	Light *light = light_owner.get_or_null(p_light);
+	ERR_FAIL_NULL_V(light, 0);
+	ERR_FAIL_INDEX_V(p_split, 4, 0);
+
+	return light->split_caster_mask[p_split];
+}
+
 void LightStorage::light_set_distance_fade(RID p_light, bool p_enabled, float p_begin, float p_shadow, float p_length) {
 	Light *light = light_owner.get_or_null(p_light);
 	ERR_FAIL_NULL(light);

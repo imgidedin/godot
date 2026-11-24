@@ -178,6 +178,7 @@ private:
 	bool blend_splits;
 	ShadowMode shadow_mode;
 	SkyMode sky_mode = SKY_MODE_LIGHT_AND_SKY;
+	uint32_t split_caster_mask[4] = { 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF, 0xFFFFFFFF };
 
 protected:
 	static void _bind_methods();
@@ -192,6 +193,9 @@ public:
 
 	void set_sky_mode(SkyMode p_mode);
 	SkyMode get_sky_mode() const;
+
+	void set_split_caster_mask(int p_split, uint32_t p_caster_mask);
+	uint32_t get_split_caster_mask(int p_split) const;
 
 	DirectionalLight3D();
 };

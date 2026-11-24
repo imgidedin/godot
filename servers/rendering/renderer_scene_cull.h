@@ -1101,6 +1101,7 @@ public:
 				real_t bias_scale;
 				real_t range_begin;
 				Vector2 uv_scale;
+				uint32_t caster_mask; // the light's shadow_caster_mask and this split's
 
 			} cascades[RendererSceneRender::MAX_DIRECTIONAL_LIGHT_CASCADES]; //max 4 cascades
 			uint32_t cascade_count;

@@ -578,6 +578,19 @@ void DirectionalLight3D::_validate_property(PropertyInfo &p_property) const {
 	}
 }
 
+// Which render layers cast shadows into one split (cascade) of the directional shadow, on top of
+// shadow_caster_mask. Lets cheap-to-skip casters (e.g. terrain) stay out of the far splits.
+void DirectionalLight3D::set_split_caster_mask(int p_split, uint32_t p_caster_mask) {
+	ERR_FAIL_INDEX(p_split, 4);
+	split_caster_mask[p_split] = p_caster_mask;
+	RS::get_singleton()->light_directional_set_split_caster_mask(light, p_split, p_caster_mask);
+}
+
+uint32_t DirectionalLight3D::get_split_caster_mask(int p_split) const {
+	ERR_FAIL_INDEX_V(p_split, 4, 0);
+	return split_caster_mask[p_split];
+}
+
 void DirectionalLight3D::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_shadow_mode", "mode"), &DirectionalLight3D::set_shadow_mode);
 	ClassDB::bind_method(D_METHOD("get_shadow_mode"), &DirectionalLight3D::get_shadow_mode);
@@ -587,6 +600,9 @@ void DirectionalLight3D::_bind_methods() {
 
 	ClassDB::bind_method(D_METHOD("set_sky_mode", "mode"), &DirectionalLight3D::set_sky_mode);
 	ClassDB::bind_method(D_METHOD("get_sky_mode"), &DirectionalLight3D::get_sky_mode);
+
+	ClassDB::bind_method(D_METHOD("set_split_caster_mask", "split", "caster_mask"), &DirectionalLight3D::set_split_caster_mask);
+	ClassDB::bind_method(D_METHOD("get_split_caster_mask", "split"), &DirectionalLight3D::get_split_caster_mask);
 
 	ADD_GROUP("Directional Shadow", "directional_shadow_");
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "directional_shadow_mode", PROPERTY_HINT_ENUM, "Orthogonal (Fast),PSSM 2 Splits (Average),PSSM 4 Splits (Slow)"), "set_shadow_mode", "get_shadow_mode");
