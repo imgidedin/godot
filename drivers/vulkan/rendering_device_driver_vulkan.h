@@ -33,6 +33,7 @@
 #include "core/templates/hash_map.h"
 #include "core/templates/paged_allocator.h"
 #include "core/templates/rb_map.h"
+#include "drivers/vulkan/fsr_upscaling_vulkan.h"
 #include "drivers/vulkan/rendering_context_driver_vulkan.h"
 #include "drivers/vulkan/rendering_shader_container_vulkan.h"
 #include "servers/rendering/rendering_device_driver.h"
@@ -411,6 +412,9 @@ private:
 	};
 
 public:
+	// For effects that record into the command buffer through vendor SDKs (in a driver callback).
+	static VkCommandBuffer command_buffer_get_vk(CommandBufferID p_cmd_buffer) { return ((const CommandBufferInfo *)p_cmd_buffer.id)->vk_command_buffer; }
+
 	virtual CommandBufferID command_buffer_create(CommandPoolID p_cmd_pool) override final;
 	virtual bool command_buffer_begin(CommandBufferID p_cmd_buffer) override final;
 	virtual bool command_buffer_begin_secondary(CommandBufferID p_cmd_buffer, RenderPassID p_render_pass, uint32_t p_subpass, FramebufferID p_framebuffer) override final;
@@ -826,6 +830,14 @@ private:
 	/******************/
 
 public:
+#ifdef WINDOWS_ENABLED
+private:
+	FSRUpscalingVulkan fsr_upscaling;
+
+public:
+	FSRUpscalingVulkan &get_fsr_upscaling() { return fsr_upscaling; }
+#endif
+
 	RenderingDeviceDriverVulkan(RenderingContextDriverVulkan *p_context_driver);
 	virtual ~RenderingDeviceDriverVulkan();
 };

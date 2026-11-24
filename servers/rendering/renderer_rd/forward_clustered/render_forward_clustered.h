@@ -34,6 +34,7 @@
 #include "servers/rendering/multi_uma_buffer.h"
 #include "servers/rendering/renderer_rd/cluster_builder_rd.h"
 #include "servers/rendering/renderer_rd/effects/fsr2.h"
+#include "servers/rendering/renderer_rd/effects/fsr_upscaling.h"
 #include "servers/rendering/renderer_rd/effects/motion_vectors_store.h"
 #include "servers/rendering/renderer_rd/effects/ss_effects.h"
 #include "servers/rendering/renderer_rd/effects/taa.h"
@@ -54,6 +55,7 @@
 #define RB_TEX_NORMAL_ROUGHNESS_MSAA SNAME("normal_roughness_msaa")
 #define RB_TEX_VOXEL_GI SNAME("voxel_gi")
 #define RB_TEX_VOXEL_GI_MSAA SNAME("voxel_gi_msaa")
+#define RB_TEX_FSR_UPSCALING_DEPTH SNAME("fsr_upscaling_depth")
 
 namespace RendererSceneRenderImplementation {
 
@@ -98,6 +100,9 @@ public:
 		RendererRD::FSR2Context *fsr2_context = nullptr;
 #ifdef METAL_MFXTEMPORAL_ENABLED
 		RendererRD::MFXTemporalContext *mfx_temporal_context = nullptr;
+#endif
+#ifdef FSR_UPSCALING_ENABLED
+		RendererRD::FSRUpscalingContext *fsr_upscaling_context = nullptr;
 #endif
 
 	public:
@@ -148,6 +153,15 @@ public:
 #ifdef METAL_MFXTEMPORAL_ENABLED
 		bool ensure_mfx_temporal(RendererRD::MFXTemporalEffect *p_effect);
 		RendererRD::MFXTemporalContext *get_mfx_temporal_context() const { return mfx_temporal_context; }
+#endif
+
+#ifdef FSR_UPSCALING_ENABLED
+		// True when the context was just created (no history to accumulate from).
+		bool ensure_fsr_upscaling(RendererRD::FSRUpscalingEffect *p_effect);
+		RendererRD::FSRUpscalingContext *get_fsr_upscaling_context() const { return fsr_upscaling_context; }
+		// The depth as R32_SFLOAT: the AMD FSR API reads depth through a D32_SFLOAT view, which the
+		// depth-stencil buffer (D32_SFLOAT_S8_UINT) can't have, so it gets a copy.
+		RID get_fsr_upscaling_depth(uint32_t p_layer) { return render_buffers->get_texture_slice(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_FSR_UPSCALING_DEPTH, p_layer, 0); }
 #endif
 
 		RID get_color_only_fb();
@@ -754,6 +768,9 @@ private:
 
 #ifdef METAL_MFXTEMPORAL_ENABLED
 	RendererRD::MFXTemporalEffect *mfx_temporal_effect = nullptr;
+#endif
+#ifdef FSR_UPSCALING_ENABLED
+	RendererRD::FSRUpscalingEffect *fsr_upscaling_effect = nullptr;
 #endif
 	RendererRD::MotionVectorsStore *motion_vectors_store = nullptr;
 

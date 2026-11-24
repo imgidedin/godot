@@ -111,6 +111,19 @@ bool RenderForwardClustered::RenderBufferDataForwardClustered::ensure_mfx_tempor
 }
 #endif
 
+#ifdef FSR_UPSCALING_ENABLED
+bool RenderForwardClustered::RenderBufferDataForwardClustered::ensure_fsr_upscaling(RendererRD::FSRUpscalingEffect *p_effect) {
+	if (!render_buffers->has_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_FSR_UPSCALING_DEPTH)) {
+		render_buffers->create_texture(RB_SCOPE_FORWARD_CLUSTERED, RB_TEX_FSR_UPSCALING_DEPTH, RD::DATA_FORMAT_R32_SFLOAT, RD::TEXTURE_USAGE_SAMPLING_BIT | RD::TEXTURE_USAGE_STORAGE_BIT);
+	}
+	if (fsr_upscaling_context == nullptr) {
+		fsr_upscaling_context = p_effect->create_context(render_buffers->get_internal_size(), render_buffers->get_target_size());
+		return true;
+	}
+	return false;
+}
+#endif
+
 void RenderForwardClustered::RenderBufferDataForwardClustered::free_data() {
 	// JIC, should already have been cleared
 	if (render_buffers) {
@@ -135,6 +148,18 @@ void RenderForwardClustered::RenderBufferDataForwardClustered::free_data() {
 	if (mfx_temporal_context) {
 		memdelete(mfx_temporal_context);
 		mfx_temporal_context = nullptr;
+	}
+#endif
+
+#ifdef FSR_UPSCALING_ENABLED
+	if (fsr_upscaling_context) {
+		// The effect destroys it once the GPU is done with it. Without the renderer (render buffers
+		// outliving it at exit) nothing can, and the device goes away with it.
+		RenderForwardClustered *renderer = RenderForwardClustered::get_singleton();
+		if (renderer != nullptr) {
+			renderer->fsr_upscaling_effect->free_context(fsr_upscaling_context);
+		}
+		fsr_upscaling_context = nullptr;
 	}
 #endif
 
@@ -1790,6 +1815,7 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		SCALE_NONE,
 		SCALE_FSR2,
 		SCALE_MFX,
+		SCALE_FSR_UPSCALING,
 	} scale_type = SCALE_NONE;
 
 	switch (rb->get_scaling_3d_mode()) {
@@ -1799,6 +1825,13 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		case RSE::VIEWPORT_SCALING_3D_MODE_METALFX_TEMPORAL:
 #ifdef METAL_MFXTEMPORAL_ENABLED
 			scale_type = SCALE_MFX;
+#else
+			scale_type = SCALE_NONE;
+#endif
+			break;
+		case RSE::VIEWPORT_SCALING_3D_MODE_FSR_UPSCALING:
+#ifdef FSR_UPSCALING_ENABLED
+			scale_type = SCALE_FSR_UPSCALING;
 #else
 			scale_type = SCALE_NONE;
 #endif
@@ -2233,7 +2266,8 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		RD::get_singleton()->draw_command_end_label();
 
 		if (using_motion_pass) {
-			if (scale_type == SCALE_MFX) {
+			if (scale_type == SCALE_MFX || scale_type == SCALE_FSR_UPSCALING) {
+				// The motion of the camera for every pixel; the motion pass then writes the moving objects' own.
 				motion_vectors_store->process(rb,
 						p_render_data->scene_data->cam_projection, p_render_data->scene_data->cam_transform,
 						p_render_data->scene_data->prev_cam_projection, p_render_data->scene_data->prev_cam_transform);
@@ -2464,6 +2498,11 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 		_process_compositor_effects(RSE::COMPOSITOR_EFFECT_CALLBACK_TYPE_POST_TRANSPARENT, p_render_data);
 	}
 
+#ifdef FSR_UPSCALING_ENABLED
+	// Retires the contexts of render buffers freed or switched to another mode, also when this one no longer upscales.
+	fsr_upscaling_effect->process_pending_frees();
+#endif
+
 	if (rb_data.is_valid() && (using_upscaling || using_taa)) {
 		if (scale_type == SCALE_FSR2) {
 			rb_data->ensure_fsr2(fsr2_effect);
@@ -2539,6 +2578,42 @@ void RenderForwardClustered::_render_scene(RenderDataRD *p_render_data, const Co
 			}
 
 			RD::get_singleton()->draw_command_end_label();
+#endif
+		} else if (scale_type == SCALE_FSR_UPSCALING) {
+#ifdef FSR_UPSCALING_ENABLED
+			const bool reset = rb_data->ensure_fsr_upscaling(fsr_upscaling_effect);
+			RendererRD::FSRUpscalingContext *context = rb_data->get_fsr_upscaling_context();
+
+			if (context != nullptr) {
+				RD::get_singleton()->draw_command_begin_label("AMD FSR Upscaling");
+				RENDER_TIMESTAMP("AMD FSR Upscaling");
+
+				for (uint32_t v = 0; v < rb->get_view_count(); v++) {
+					real_t fov = p_render_data->scene_data->cam_projection.get_fov();
+					real_t aspect = p_render_data->scene_data->cam_projection.get_aspect();
+					real_t fovy = p_render_data->scene_data->cam_projection.get_fovy(fov, 1.0 / aspect);
+
+					RendererRD::FSRUpscalingEffect::Parameters params;
+					params.context = context;
+					params.internal_size = rb->get_internal_size();
+					params.color = rb->get_internal_texture(v);
+					params.depth = rb_data->get_fsr_upscaling_depth(v);
+					copy_effects->copy_depth_to_rect(rb->get_depth_texture(v), params.depth, Rect2i(Point2i(), rb->get_internal_size()));
+					params.velocity = rb->get_velocity_buffer(false, v);
+					params.output = rb->get_upscaled_texture(v);
+					// Same jitter convention as FSR 2 (pixels).
+					params.jitter = p_render_data->scene_data->taa_jitter * Vector2(rb->get_internal_size()) * 0.5f;
+					params.sharpness = CLAMP(1.0f - (rb->get_fsr_sharpness() / 2.0f), 0.0f, 1.0f);
+					params.delta_time = float(time_step);
+					params.z_near = p_render_data->scene_data->z_near;
+					params.z_far = p_render_data->scene_data->z_far;
+					params.fovy = Math::deg_to_rad(fovy);
+					params.reset = reset;
+					fsr_upscaling_effect->upscale(params);
+				}
+
+				RD::get_singleton()->draw_command_end_label();
+			}
 #endif
 		} else if (using_taa) {
 			RD::get_singleton()->draw_command_begin_label("TAA");
@@ -5353,12 +5428,19 @@ RenderForwardClustered::RenderForwardClustered() {
 	fsr2_effect = memnew(RendererRD::FSR2Effect);
 	ss_effects = memnew(RendererRD::SSEffects);
 #ifdef METAL_MFXTEMPORAL_ENABLED
-	motion_vectors_store = memnew(RendererRD::MotionVectorsStore);
 	mfx_temporal_effect = memnew(RendererRD::MFXTemporalEffect);
+#endif
+#ifdef FSR_UPSCALING_ENABLED
+	fsr_upscaling_effect = memnew(RendererRD::FSRUpscalingEffect);
+#endif
+#if defined(METAL_MFXTEMPORAL_ENABLED) || defined(FSR_UPSCALING_ENABLED)
+	motion_vectors_store = memnew(RendererRD::MotionVectorsStore);
 #endif
 }
 
 RenderForwardClustered::~RenderForwardClustered() {
+	singleton = nullptr;
+
 	if (ss_effects != nullptr) {
 		memdelete(ss_effects);
 		ss_effects = nullptr;
@@ -5379,12 +5461,19 @@ RenderForwardClustered::~RenderForwardClustered() {
 		memdelete(mfx_temporal_effect);
 		mfx_temporal_effect = nullptr;
 	}
+#endif
+
+#ifdef FSR_UPSCALING_ENABLED
+	if (fsr_upscaling_effect) {
+		memdelete(fsr_upscaling_effect);
+		fsr_upscaling_effect = nullptr;
+	}
+#endif
 
 	if (motion_vectors_store) {
 		memdelete(motion_vectors_store);
 		motion_vectors_store = nullptr;
 	}
-#endif
 
 	RD::get_singleton()->free_rid(shadow_sampler);
 	RSG::light_storage->directional_shadow_atlas_set_size(0);

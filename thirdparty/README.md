@@ -17,6 +17,22 @@ Files extracted from upstream source:
 - `LICENSE-MIT`
 
 
+## amd-ffx-api
+
+- Upstream: https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK
+- Version: AMD FSR SDK 2.4.0 (7539ae8b6568ad29ed78a753404351daf3b5cca7, 2026)
+- License: MIT (these headers; the signed DLLs they load are under AMD's binary
+  license in the SDK's `docs/license.md` and are not part of this repository)
+
+Files extracted from upstream source:
+
+- `Kits/FidelityFX/api/include/ffx_api.h`, `ffx_api_types.h`, `ffx_api_loader.h`
+  and `vk/ffx_api_vk.h`, as `api/include/...`
+- `Kits/FidelityFX/upscalers/include/ffx_upscale.h`, as `upscalers/include/ffx_upscale.h`
+
+Line endings converted to LF.
+
+
 ## amd-fsr
 
 - Upstream: https://github.com/GPUOpen-Effects/FidelityFX-FSR

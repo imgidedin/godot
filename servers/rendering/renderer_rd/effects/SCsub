@@ -11,6 +11,16 @@ env_effects = env.Clone()
 if env["metal"]:
     env_effects.Prepend(CPPPATH=["#thirdparty/metal-cpp"])
 
+# AMD FSR Upscaling (fsr_upscaling.cpp) records into the Vulkan driver's command buffers. The servers
+# are built before drivers/vulkan/SCsub sets up the Vulkan headers on the shared environment, so the
+# same setup is repeated here for this environment (as with metal-cpp for MetalFX above).
+if env["vulkan"] and env["platform"] == "windows":
+    env_effects.Prepend(CPPPATH=["#thirdparty/vulkan", "#thirdparty/vulkan/include"])
+    env_effects.AppendUnique(CPPDEFINES=["VK_USE_PLATFORM_WIN32_KHR", "VMA_EXTERNAL_MEMORY_WIN32=0"])
+    if env["use_volk"]:
+        env_effects.AppendUnique(CPPDEFINES=["USE_VOLK"])
+        env_effects.Prepend(CPPPATH=["#thirdparty/volk"])
+
 # Thirdparty source files
 
 thirdparty_obj = []
