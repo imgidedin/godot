@@ -59,6 +59,7 @@ void WorkerThreadPool::_process_task(Task *p_task) {
 	int pool_thread_index = thread_ids[Thread::get_caller_id()];
 	ThreadData &curr_thread = threads[pool_thread_index];
 	Task *prev_task = nullptr; // In case this is recursively called.
+	bool prev_has_pump_task = false;
 
 	bool safe_for_nodes_backup = is_current_thread_safe_for_nodes();
 	CallQueue *call_queue_backup = MessageQueue::get_singleton() != MessageQueue::get_main_singleton() ? MessageQueue::get_singleton() : nullptr;
@@ -78,7 +79,9 @@ void WorkerThreadPool::_process_task(Task *p_task) {
 		p_task->pool_thread_index = pool_thread_index;
 		prev_task = curr_thread.current_task;
 		curr_thread.current_task = p_task;
-		curr_thread.has_pump_task = p_task->is_pump_task;
+		// A task run nested inside a pump task is still on the pump's thread: it keeps the pump's rules.
+		prev_has_pump_task = curr_thread.has_pump_task;
+		curr_thread.has_pump_task = prev_has_pump_task || p_task->is_pump_task;
 		if (p_task->pending_notify_yield_over) {
 			curr_thread.yield_is_over = true;
 		}
@@ -165,6 +168,7 @@ void WorkerThreadPool::_process_task(Task *p_task) {
 #ifdef THREADS_ENABLED
 	{
 		curr_thread.current_task = prev_task;
+		curr_thread.has_pump_task = prev_has_pump_task;
 		if (low_priority) {
 			low_priority_threads_used--;
 
@@ -315,7 +319,7 @@ void WorkerThreadPool::_notify_threads(const ThreadData *p_current_thread_data, 
 			i++, notify_index = (notify_index + 1) % thread_count) {
 		ThreadData &th = threads[notify_index];
 
-		if (th.signaled) {
+		if (th.signaled || th.has_pump_task) { // (A pump thread only runs the task it awaits: see _wait_collaboratively().)
 			continue;
 		}
 		if (th.awaited_task) {
@@ -536,9 +540,31 @@ void WorkerThreadPool::_wait_collaboratively(ThreadData *p_caller_pool_thread, T
 				}
 			}
 
-			if (p_caller_pool_thread->pool->task_queue.first()) {
+			if (p_caller_pool_thread->has_pump_task) {
+				// A pump task (e.g., the rendering server's loop) runs only the task it awaits, and only
+				// if nobody has taken it yet. Running unrelated tasks here would run them inside the
+				// server's own thread: a resource load could then hold ResourceLoader/ResourceCache locks
+				// while a server call made from it flushes the server's command queue (drawing a whole
+				// frame, compiling pipelines...), and the pool deadlocks when another thread needs those locks.
+				if (p_task != ThreadData::YIELDING && p_task->task_elem.in_list()) {
+					task_to_process = p_task;
+					bool waiting_for_slot = false; // Low priority, still in the queue that waits for a free slot.
+					for (SelfList<Task> *E = low_priority_task_queue.first(); E; E = E->next()) {
+						if (E == &p_task->task_elem) {
+							waiting_for_slot = true;
+							break;
+						}
+					}
+					if (waiting_for_slot) {
+						low_priority_task_queue.remove(&p_task->task_elem);
+						low_priority_threads_used++; // As if promoted; _process_task() gives it back.
+					} else {
+						task_queue.remove(&p_task->task_elem);
+					}
+				}
+			} else if (p_caller_pool_thread->pool->task_queue.first()) {
 				task_to_process = task_queue.first()->self();
-				if ((p_task == ThreadData::YIELDING || p_caller_pool_thread->has_pump_task == true) && task_to_process->is_pump_task) {
+				if (p_task == ThreadData::YIELDING && task_to_process->is_pump_task) {
 					task_to_process = nullptr;
 					_notify_threads(p_caller_pool_thread, 1, 0);
 				} else {
@@ -735,6 +761,43 @@ void WorkerThreadPool::wait_for_group_task_completion(GroupID p_group) {
 
 	{
 		Group *group = *groupp;
+
+		// A pool thread waiting for a group must not just sleep while tasks of that very group are
+		// still queued: if every pool thread ends up waiting like this (e.g., resource loads that
+		// make ShaderRD compile variants), nobody is left to run the group and the pool deadlocks.
+		// So the waiting thread runs the group's queued tasks itself. Tasks already running elsewhere
+		// are pure group work, so the semaphore wait below is bounded once none are queued.
+		// As in _wait_collaboratively(), the unlockable mutexes stay locked while running tasks and
+		// are only released for the actual sleep.
+		if (thread_ids.has(Thread::get_caller_id())) {
+			while (true) {
+				Task *own_task = nullptr;
+				{
+					MutexLock task_lock(task_mutex);
+					for (SelfList<Task> *E = task_queue.first(); E; E = E->next()) {
+						if (E->self()->group == group) {
+							own_task = E->self();
+							task_queue.remove(E);
+							break;
+						}
+					}
+					if (!own_task) {
+						for (SelfList<Task> *E = low_priority_task_queue.first(); E; E = E->next()) {
+							if (E->self()->group == group) {
+								own_task = E->self();
+								low_priority_task_queue.remove(E);
+								low_priority_threads_used++; // As if promoted; _process_task() gives it back.
+								break;
+							}
+						}
+					}
+				}
+				if (!own_task) {
+					break;
+				}
+				_process_task(own_task);
+			}
+		}
 
 		if (this == singleton) {
 			_unlock_unlockable_mutexes();
