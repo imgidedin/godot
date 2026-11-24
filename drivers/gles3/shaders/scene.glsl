@@ -61,6 +61,14 @@ RENDER_MOTION_VECTORS = false
 #define IN_SHADOW_PASS false
 #endif
 
+// IN_DEPTH_PASS: this draw only writes depth (shadow pass or depth prepass; the prepass may also
+// write normal and roughness). A constant, so the material work that only feeds color drops out.
+#if defined(MODE_RENDER_DEPTH) && !defined(MODE_RENDER_MATERIAL) && !defined(MODE_RENDER_SDF)
+#define IN_DEPTH_PASS true
+#else
+#define IN_DEPTH_PASS false
+#endif
+
 #include "stdlib_inc.glsl"
 
 #if !defined(MODE_RENDER_DEPTH) || defined(TANGENT_USED) || defined(NORMAL_MAP_USED) || defined(BENT_NORMAL_MAP_USED) || defined(LIGHT_ANISOTROPY_USED) || defined(LIGHT_CLEARCOAT_USED)
@@ -1055,6 +1063,14 @@ void main() {
 #define IN_SHADOW_PASS true
 #else
 #define IN_SHADOW_PASS false
+#endif
+
+// IN_DEPTH_PASS: this draw only writes depth (shadow pass or depth prepass; the prepass may also
+// write normal and roughness). A constant, so the material work that only feeds color drops out.
+#if defined(MODE_RENDER_DEPTH) && !defined(MODE_RENDER_MATERIAL) && !defined(MODE_RENDER_SDF)
+#define IN_DEPTH_PASS true
+#else
+#define IN_DEPTH_PASS false
 #endif
 
 #define FLAGS_NON_UNIFORM_SCALE (1 << 4)

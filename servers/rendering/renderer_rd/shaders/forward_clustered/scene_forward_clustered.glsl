@@ -4,6 +4,14 @@
 
 #VERSION_DEFINES
 
+// IN_DEPTH_PASS: this draw only writes depth (shadow pass or depth prepass; the prepass may also
+// write normal and roughness). A constant, so the material work that only feeds color drops out.
+#if defined(MODE_RENDER_DEPTH) && !defined(MODE_RENDER_MATERIAL) && !defined(MODE_RENDER_SDF)
+#define IN_DEPTH_PASS true
+#else
+#define IN_DEPTH_PASS false
+#endif
+
 /* Include half precision types. */
 #include "../half_inc.glsl"
 
@@ -865,6 +873,14 @@ void main() {
 #version 450
 
 #VERSION_DEFINES
+
+// IN_DEPTH_PASS: this draw only writes depth (shadow pass or depth prepass; the prepass may also
+// write normal and roughness). A constant, so the material work that only feeds color drops out.
+#if defined(MODE_RENDER_DEPTH) && !defined(MODE_RENDER_MATERIAL) && !defined(MODE_RENDER_SDF)
+#define IN_DEPTH_PASS true
+#else
+#define IN_DEPTH_PASS false
+#endif
 
 #define SHADER_IS_SRGB false
 #define SHADER_SPACE_FAR 0.0

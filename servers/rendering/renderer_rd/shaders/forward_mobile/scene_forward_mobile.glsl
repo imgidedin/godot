@@ -19,6 +19,14 @@
 #define IN_SHADOW_PASS false
 #endif
 
+// IN_DEPTH_PASS: this draw only writes depth (shadow pass or depth prepass; the prepass may also
+// write normal and roughness). A constant, so the material work that only feeds color drops out.
+#if defined(MODE_RENDER_DEPTH) && !defined(MODE_RENDER_MATERIAL) && !defined(MODE_RENDER_SDF)
+#define IN_DEPTH_PASS true
+#else
+#define IN_DEPTH_PASS false
+#endif
+
 #ifdef USE_MULTIVIEW
 #define OUTPUT_IS_MULTIVIEW true
 #else
@@ -830,6 +838,14 @@ void main() {
 #define IN_SHADOW_PASS true
 #else
 #define IN_SHADOW_PASS false
+#endif
+
+// IN_DEPTH_PASS: this draw only writes depth (shadow pass or depth prepass; the prepass may also
+// write normal and roughness). A constant, so the material work that only feeds color drops out.
+#if defined(MODE_RENDER_DEPTH) && !defined(MODE_RENDER_MATERIAL) && !defined(MODE_RENDER_SDF)
+#define IN_DEPTH_PASS true
+#else
+#define IN_DEPTH_PASS false
 #endif
 
 #ifdef USE_MULTIVIEW
