@@ -32,6 +32,7 @@
 
 #include "file_access_windows.h"
 
+#include "core/config/engine.h"
 #include "core/config/project_settings.h"
 #include "core/os/os.h"
 #include "core/string/print_string.h"
@@ -141,7 +142,9 @@ Error FileAccessWindows::open_internal(const String &p_path, int p_mode_flags) {
 	// a file using the wrong case (which *works* on Windows, but won't on other
 	// platforms), we only check for relative paths, or paths in res:// or user://,
 	// other paths aren't likely to be portable anyway.
-	if (p_mode_flags == READ && (p_path.is_relative_path() || get_access_type() != ACCESS_FILESYSTEM)) {
+	// Jornada: only in the editor. A game run by the editor binary paid one FindFirstFileW per path
+	// part on every file it read (scripts, models, textures, .import files) during loading.
+	if (p_mode_flags == READ && Engine::get_singleton()->is_editor_hint() && (p_path.is_relative_path() || get_access_type() != ACCESS_FILESYSTEM)) {
 		String base_path = FileAccess::fix_path(p_path);
 		String working_path;
 		String proper_path;

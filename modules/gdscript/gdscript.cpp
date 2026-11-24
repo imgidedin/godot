@@ -54,6 +54,7 @@
 #include "core/config/project_settings.h"
 #include "core/core_constants.h"
 #include "core/io/file_access.h"
+#include "core/os/os.h"
 #include "scene/resources/packed_scene.h"
 #include "scene/scene_string_names.h"
 
@@ -866,7 +867,12 @@ Error GDScript::reload(bool p_keep_state) {
 #ifdef TOOLS_ENABLED
 	// Done after compilation because it needs the GDScript object's inner class GDScript objects,
 	// which are made by calling make_scripts() within compiler.compile() above.
-	GDScriptDocGen::generate_docs(this, parser.get_tree());
+	// Jornada: only the editor and --doctool --gdscript-docs (which runs without the editor hint) read
+	// the docs. A game run by the editor binary paid for them on every script it compiles.
+	static const bool docs_from_cmdline = OS::get_singleton()->get_cmdline_args().find("--gdscript-docs") != nullptr;
+	if (Engine::get_singleton()->is_editor_hint() || docs_from_cmdline) {
+		GDScriptDocGen::generate_docs(this, parser.get_tree());
+	}
 #endif
 
 #ifdef DEBUG_ENABLED
@@ -891,7 +897,11 @@ Error GDScript::reload(bool p_keep_state) {
 		_restore_old_static_data();
 	}
 
-	if (p_keep_state) {
+	// Jornada: the inspector is the editor's. In a game run by the editor binary, update_exports
+	// parsed and analyzed every compiled script a second time (and walked its inheriters), about a
+	// third of compiling the game's scripts at startup. Without it the game behaves as the exported
+	// one, where none of this exists (get_property_default_value is false there too).
+	if (p_keep_state && Engine::get_singleton()->is_editor_hint()) {
 		// Update the properties in the inspector.
 		update_exports();
 	}
