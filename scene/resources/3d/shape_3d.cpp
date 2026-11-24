@@ -75,7 +75,10 @@ void Shape3D::set_debug_color(const Color &p_color) {
 #ifdef DEBUG_ENABLED
 	debug_properties_edited = true;
 #endif // DEBUG_ENABLED
-	_update_shape();
+	// Only the debug mesh depends on this, not the physics shape: the base update (changed signal and
+	// debug mesh) and not the subclass one, which sends the shape data to the physics server again
+	// (for a big concave shape, a copy of every face, and the backend throws away what it built from it).
+	Shape3D::_update_shape();
 }
 
 Color Shape3D::get_debug_color() const {
@@ -91,7 +94,10 @@ void Shape3D::set_debug_fill(bool p_fill) {
 #ifdef DEBUG_ENABLED
 	debug_properties_edited = true;
 #endif // DEBUG_ENABLED
-	_update_shape();
+	// Only the debug mesh depends on this, not the physics shape: the base update (changed signal and
+	// debug mesh) and not the subclass one, which sends the shape data to the physics server again
+	// (for a big concave shape, a copy of every face, and the backend throws away what it built from it).
+	Shape3D::_update_shape();
 }
 
 bool Shape3D::get_debug_fill() const {
